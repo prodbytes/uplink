@@ -1,0 +1,40 @@
+FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+
+SHELL ["/bin/bash", "-lc"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        sudo \
+        unzip \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Consider pinning the devbox version so image rebuilds don't drift from devbox.lock
+# ENV DEVBOX_USE_VERSION=0.17.5
+RUN curl -fsSL https://get.jetify.com/devbox | bash -s -- -f \
+    && chmod 755 /usr/local/bin/devbox
+
+# Install packages as the runtime user so the nix profile ownership matches
+USER vscode
+
+# Devbox needs Nix. Install it single-user (--no-daemon): containers have no
+# systemd for the nix daemon, and this way the store is owned by vscode.
+RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon
+
+# Warm the nix store: the repo bind mount shadows the workspace at container
+# start, so only /nix/store survives the build. Fetch the locked store paths
+# straight from cache.nixos.org (no GitHub API needed at build time);
+# postCreateCommand runs the full `devbox install` against this warm cache.
+WORKDIR /tmp/devbox-warmup
+COPY --chown=vscode:vscode devbox.lock ./
+RUN export PATH="$HOME/.nix-profile/bin:$PATH" \
+    && SYS="$(uname -m)-linux" \
+    && jq -r --arg sys "$SYS" '.packages[].systems[$sys].outputs[]?.path // empty' devbox.lock \
+       | xargs -r nix-store --realise \
+    && sudo rm -rf /tmp/devbox-warmup
+
+WORKDIR /workspaces/blank-devbox

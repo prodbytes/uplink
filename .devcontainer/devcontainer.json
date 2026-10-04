@@ -1,0 +1,30 @@
+{
+  "build": {
+    "dockerfile": "Containerfile",
+    "context": ".."
+  },
+  "remoteUser": "vscode",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": [
+        "vscjava.vscode-java-pack",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "ms-vscode.vscode-typescript-next",
+        "golang.go",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-xml"
+      ]
+    }
+  },
+  "postCreateCommand": "bash -lc 'devbox install'"
+}

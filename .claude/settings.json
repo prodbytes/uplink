@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run check)",
+      "Bash(mint validate *)",
+      "Bash(mint broken-links *)",
+      "mcp__mintlify-docs__search_mintlify"
+    ]
+  }
+}

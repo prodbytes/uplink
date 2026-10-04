@@ -1,0 +1,28 @@
+version: "0.5"
+
+processes:
+  0-health-check:
+    command: bash scripts/health-check.sh
+    environment:
+      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-15}
+    availability:
+      restart: on_failure
+      backoff_seconds: 5
+
+  1-postgresql:
+    command: docker compose up postgres
+    shutdown:
+      command: docker stop devbox-db
+      timeout_seconds: 30
+    readiness_probe:
+      exec:
+        command: docker exec devbox-db pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}
+      initial_delay_seconds: 3
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 20
+    availability:
+      restart: on_failure
+      backoff_seconds: 5
+
+
