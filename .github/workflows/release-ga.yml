@@ -1,0 +1,32 @@
+# Publishes a general-availability release: every pushed tag ending in GA
+# (e.g. 0.1.202610041200-GA, from scripts/release-ga.sh), or a manual run for
+# an existing GA tag. The Build workflow (build.yml) tests, builds the native
+# executables and publishes them as the latest release.
+name: Release GA
+
+on:
+  push:
+    tags:
+      - "*GA"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GA tag to (re)publish, e.g. 0.1.202610041200-GA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      kind: GA

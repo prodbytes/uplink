@@ -1,0 +1,32 @@
+# Publishes a release candidate: every pushed tag matching *RC* (e.g.
+# 0.1.202610041200-RC, from scripts/release-rc.sh), or a manual run for an
+# existing RC tag. The Build workflow (build.yml) tests, builds the native
+# executables and publishes them as a prerelease.
+name: Release RC
+
+on:
+  push:
+    tags:
+      - "*RC*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing RC tag to (re)publish, e.g. 0.1.202610041200-RC
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      kind: RC

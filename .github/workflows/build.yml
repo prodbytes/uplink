@@ -1,0 +1,227 @@
+# Builds and tests the uplink native executables, and publishes them as a
+# GitHub release when called with a tag.
+#
+# - Release RC (release-rc.yml) and Release GA (release-ga.yml) call it for
+#   their tags: an X.Y.Z-RC tag is published as a prerelease, an X.Y.Z-GA
+#   tag as the latest release. scripts/release-rc.sh and
+#   scripts/release-ga.sh push them.
+# - Pull requests that change the build only build (no release), so a broken
+#   build shows up before a tag does.
+#
+# Each platform builds natively on a runner of that OS and architecture
+# (GraalVM doesn't cross-compile): Linux x64 and arm64 on Ubuntu 22.04 (glibc
+# 2.35, so the binary also runs on older distributions than a 24.04 build
+# would), and macOS on Apple Silicon.
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag (must already exist), X.Y.Z-RC[n] or X.Y.Z-GA
+        required: true
+        type: string
+      kind:
+        description: RC (prerelease) or GA (latest release)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - .github/workflows/release-*.yml
+      - .mvn/**
+      - mvnw
+      - pom.xml
+      - make.sh
+      - Makefile
+      - scripts/version.sh
+      - src/**
+      - version.X.txt
+      - version.Y.txt
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "25"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      version_z: ${{ steps.version.outputs.version_z }}
+    steps:
+      - id: tag
+        name: Resolve the release tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          KIND: ${{ inputs.kind }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ -z "$INPUT_TAG" ]]; then
+            tag="pr-$PR_NUMBER"
+          else
+            tag="$INPUT_TAG"
+            case "$KIND" in
+              RC) pattern='^[0-9]+\.[0-9]+\.[0-9]+-RC[0-9]*$' ;;
+              GA) pattern='^[0-9]+\.[0-9]+\.[0-9]+-GA$' ;;
+              *) echo "::error::Unknown release kind '$KIND'"; exit 1 ;;
+            esac
+            if [[ ! "$tag" =~ $pattern ]]; then
+              echo "::error::Tag '$tag' isn't an X.Y.Z-$KIND release tag"
+              exit 1
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      # One version for every platform's build. A release tag X.Y.Z-* keeps
+      # its Z, and its X.Y must match the version files; a PR build gets Z
+      # from the current time.
+      - id: version
+        name: Resolve the version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if [[ "$TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)- ]]; then
+            export VERSION_Z="${BASH_REMATCH[3]}"
+            tag_xy="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          fi
+          source scripts/version.sh
+          if [[ -n "${tag_xy:-}" && "$tag_xy" != "$VERSION_X.$VERSION_Y" ]]; then
+            echo "::error::Tag $TAG is version $tag_xy, but version.X.txt/version.Y.txt say $VERSION_X.$VERSION_Y"
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "version_z=$VERSION_Z"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    env:
+      VERSION_Z: ${{ needs.prepare.outputs.version_z }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: make test
+        run: ./make.sh test
+
+  build:
+    needs: prepare
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-22.04
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+          - name: macos-arm64
+            os: macos-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      VERSION_Z: ${{ needs.prepare.outputs.version_z }}
+      PLATFORM: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.7
+        with:
+          distribution: graalvm-community
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Show the toolchain
+        run: |
+          java -version
+          native-image --version
+
+      - name: make build
+        run: ./make.sh build
+
+      # The binary must start and report the release's version.
+      - name: Check the binary
+        run: |
+          got="$(target/uplink --version)"
+          echo "$got"
+          if [[ "$got" != "uplink $VERSION" ]]; then
+            echo "::error::Expected 'uplink $VERSION', got '$got'"
+            exit 1
+          fi
+          target/uplink --help
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -czf "dist/uplink-$TAG-$PLATFORM.tar.gz" -C target uplink
+          ls -l dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: uplink-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: [prepare, test, build]
+    if: inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: uplink-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum uplink-* | tee SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          KIND: ${{ inputs.kind }}
+        run: |
+          title="uplink-$TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$title"
+          else
+            flags=(--title "$title" --generate-notes --verify-tag)
+            if [[ "$KIND" == GA ]]; then
+              flags+=(--latest)
+            else
+              flags+=(--prerelease --latest=false)
+            fi
+            gh release create "$TAG" "${flags[@]}" dist/*
+          fi
