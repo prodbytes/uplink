@@ -1,5 +1,5 @@
 # Sample use of the uplink action (action.yml at the repository root): checks
-# https://prodbytes.substack.com for broken links every Monday, on demand, and
+# https://aletyx.ai for broken links every Monday, on demand, and
 # on pull requests that change the action. The job fails when a link is
 # broken, and the report is in the run's summary. On pull requests, which test
 # the action rather than the site, the sample site's broken links don't fail
@@ -17,7 +17,7 @@ on:
       url:
         description: Site to check
         required: true
-        default: https://prodbytes.substack.com
+        default: https://aletyx.ai
   pull_request:
     paths:
       - action.yml
@@ -38,7 +38,7 @@ jobs:
         uses: ./
         continue-on-error: ${{ github.event_name == 'pull_request' }}
         with:
-          url: ${{ inputs.url || 'https://prodbytes.substack.com' }}
+          url: ${{ inputs.url || 'https://aletyx.ai' }}
           args: --max-pages=500
       - if: github.event_name == 'pull_request'
         env:

@@ -139,7 +139,7 @@ is broken. The report goes to the job summary.
 ```yaml
 - uses: prodbytes/uplink@main
   with:
-    url: https://prodbytes.substack.com
+    url: https://aletyx.ai
     args: --max-pages=500        # optional, more uplink options
     # version: 0.1.202610042105-GA   # optional, a release tag to run
     # summary: false                 # optional, skip the job summary
@@ -152,8 +152,11 @@ The step's `exit-code` output is `0`, `1` or `2`, as above; add
 runs on Linux (x64, arm64) and macOS (Apple Silicon) runners.
 
 [Check links](.github/workflows/check-links.yml) is a sample: it checks
-prodbytes.substack.com every Monday and on demand (**Run workflow** takes
-another URL).
+aletyx.ai every Monday and on demand (**Run workflow** takes another URL).
+Some sites block GitHub's runners: Substack's Cloudflare, for one, answers
+them with 403 whatever the User-Agent. The start page then shows up as
+unverified and nothing is crawled, so check that a site lets runners in, or
+use a self-hosted runner.
 
 ### Build and install
 
