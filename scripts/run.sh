@@ -156,7 +156,7 @@ main() {
 
   # `curl | sh` leaves stdin on the pipe; the dashboard needs the terminal.
   if [ -t 1 ] && [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then
-    exec </dev/tty
+    exec <>/dev/tty
   fi
   if [ -z "$server_pid" ]; then
     exec "$dir/uplink" "$@"
