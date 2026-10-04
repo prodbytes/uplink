@@ -220,4 +220,20 @@ public final class Links {
         }
         return links;
     }
+
+    /**
+     * The URLs a parsed XML sitemap lists: pages in a {@code <urlset>}, or further
+     * sitemaps in a {@code <sitemapindex>}. Any other XML document lists none.
+     */
+    public static Set<URI> extractSitemap(Document xml) {
+        Set<URI> links = new LinkedHashSet<>();
+        Element root = xml.children().isEmpty() ? null : xml.child(0);
+        if (root == null || !(root.tagName().equals("urlset") || root.tagName().equals("sitemapindex"))) {
+            return links;
+        }
+        for (Element loc : root.select("> url > loc, > sitemap > loc")) {
+            resolve(loc.text()).ifPresent(links::add);
+        }
+        return links;
+    }
 }
