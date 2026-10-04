@@ -31,7 +31,7 @@ class CrawlerTest {
                     reported.add(result);
                 }
             };
-            var options = new Crawler.Options(4, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT, true);
+            var options = new Crawler.Options(4, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT, true, true);
             Crawler crawler = new Crawler(URI.create(site.siteUrl()), options, listener);
             crawler.run();
 
@@ -87,7 +87,7 @@ class CrawlerTest {
     void checksHostsInParallelOnVirtualThreadsWithinPerHostLimit() throws Exception {
         try (TestSite site = new TestSite()) {
             // 12 slow internal links and 12 slow external ones, 150ms each.
-            var options = new Crawler.Options(3, 64, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT, true);
+            var options = new Crawler.Options(3, 64, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT, true, true);
             Crawler crawler = new Crawler(URI.create(site.siteUrl() + "fanout"), options, new CrawlListener() {
             });
             long start = System.nanoTime();
@@ -106,7 +106,7 @@ class CrawlerTest {
     @Test
     void redirectsCanBeLeftUnfollowed() throws Exception {
         try (TestSite site = new TestSite()) {
-            var options = new Crawler.Options(1, 1, Duration.ofSeconds(5), 10, Crawler.Options.DEFAULT_USER_AGENT, false);
+            var options = new Crawler.Options(1, 1, Duration.ofSeconds(5), 10, Crawler.Options.DEFAULT_USER_AGENT, false, true);
             Crawler crawler = new Crawler(URI.create(site.siteUrl() + "redirect"), options, new CrawlListener() {
             });
             crawler.run();
@@ -132,9 +132,42 @@ class CrawlerTest {
     }
 
     @Test
+    void crawlsPagesListedInSitemaps() throws Exception {
+        try (TestSite site = new TestSite().withSitemaps()) {
+            Crawler crawler = new Crawler(URI.create(site.siteUrl()), Crawler.Options.defaults(), new CrawlListener() {
+            });
+            crawler.run();
+            Map<String, LinkResult> byPath = crawler.results().stream()
+                    .filter(LinkResult::internal)
+                    .collect(Collectors.toMap(r -> r.url().getPath(), Function.identity()));
+
+            URI sitemap = URI.create(site.siteUrl() + "sitemap-pages.xml");
+            assertOutcome(byPath, "/orphan", LinkResult.Outcome.OK, 200);
+            assertEquals(sitemap, byPath.get("/orphan").referrer(), "a page found in a sitemap is reported as found there");
+            assertOutcome(byPath, "/orphan-child", LinkResult.Outcome.OK, 200);
+            assertOutcome(byPath, "/gone-orphan", LinkResult.Outcome.BROKEN, 404);
+            assertEquals(1, site.hits("/"), "a page both linked and listed is fetched once");
+            assertEquals(1, site.hits("/sitemap-index.xml"), "a sitemap index listing itself is read once");
+            assertEquals(0, site.hits("/ext/from-sitemap"), "sitemap entries on other sites are not checked");
+            assertEquals(0, site.hits("/orphan.png"), "image entries are not pages");
+        }
+    }
+
+    @Test
+    void sitemapsCanBeSkipped() throws Exception {
+        try (TestSite site = new TestSite().withSitemaps()) {
+            var options = new Crawler.Options(4, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT, true, false);
+            new Crawler(URI.create(site.siteUrl()), options, new CrawlListener() {
+            }).run();
+            assertEquals(0, site.hits("/robots.txt"));
+            assertEquals(0, site.hits("/orphan"));
+        }
+    }
+
+    @Test
     void unreachableHostIsBroken() throws Exception {
         // Nothing listens on port 9 (discard) of the loopback interface.
-        var options = new Crawler.Options(1, 1, Duration.ofSeconds(3), 10, Crawler.Options.DEFAULT_USER_AGENT, true);
+        var options = new Crawler.Options(1, 1, Duration.ofSeconds(3), 10, Crawler.Options.DEFAULT_USER_AGENT, true, true);
         Crawler crawler = new Crawler(URI.create("http://127.0.0.1:9/"), options, new CrawlListener() {
         });
         crawler.run();

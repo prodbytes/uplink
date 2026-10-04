@@ -83,6 +83,12 @@ public class UplinkCommand implements Callable<Integer> {
                     + " (default: ${DEFAULT-VALUE}, from UPLINK_FOLLOW_REDIRECTS when set)")
     boolean followRedirects;
 
+    @Option(names = "--sitemap", negatable = true, fallbackValue = "true", defaultValue = "true",
+            description = "Also crawl the pages listed in each site's sitemaps (from robots.txt, else /sitemap.xml),"
+                    + " which finds pages no link reaches without JavaScript; --no-sitemap only follows links"
+                    + " (default: ${DEFAULT-VALUE})")
+    boolean sitemap;
+
     @Override
     public Integer call() throws Exception {
         PrintStream out = System.out;
@@ -110,7 +116,7 @@ public class UplinkCommand implements Callable<Integer> {
         String reason = mode == Mode.auto ? env.reason() : "--mode=" + mode;
 
         Crawler.Options options = new Crawler.Options(concurrency, maxInFlight, Duration.ofSeconds(timeoutSeconds),
-                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects);
+                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects, sitemap);
         ToolkitRunner terminal = null;
         if (tui) {
             try {
