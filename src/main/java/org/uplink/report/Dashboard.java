@@ -71,6 +71,7 @@ public final class Dashboard {
     }
 
     private final URI root;
+    private final List<URI> sites;
     private final Crawler.Options options;
     private final Duration interval;
     private final Monitor monitor;
@@ -85,7 +86,13 @@ public final class Dashboard {
     private int latencyCursor;
 
     public Dashboard(URI root, Crawler.Options options, Duration interval, Duration slowThreshold) {
-        this.root = root;
+        this(List.of(root), options, interval, slowThreshold);
+    }
+
+    /** @param sites the start URL, followed by any other sites whose pages are crawled too */
+    public Dashboard(List<URI> sites, Crawler.Options options, Duration interval, Duration slowThreshold) {
+        this.root = sites.getFirst();
+        this.sites = sites;
         this.options = options;
         this.interval = interval;
         this.monitor = new Monitor(slowThreshold);
@@ -147,7 +154,7 @@ public final class Dashboard {
     private void loop() {
         while (stop.getCount() > 0) {
             int number = ++pass;
-            Crawler crawler = new Crawler(root, options, monitor);
+            Crawler crawler = new Crawler(sites, options, monitor);
             current = crawler;
             monitor.passStarted(number);
             try {
@@ -292,30 +299,30 @@ public final class Dashboard {
             CrawlStats s = crawler.stats();
             URI checking = monitor.lastStarted();
             now = Line.from(
-                    Span.raw(" This pass  ").gray(),
-                    Span.raw(s.checked() + " checked").white(),
+                    Span.raw(" " + s.checked() + " checked").white(),
                     Span.raw("   " + s.inFlight() + " in flight").white(),
                     Span.raw("   " + s.queued() + " queued").white(),
                     Span.raw("   " + s.pages() + " pages").white(),
+                    Span.raw("   " + s.requests() + " requests").white(),
                     Span.raw("   " + Report.duration(s.elapsed())).dim(),
                     Span.raw(checking == null ? "" : "   " + checking).dim());
         } else {
-            now = Line.from(Span.raw(" This pass  ").gray(), Span.raw("idle").dim());
+            now = Line.from(Span.raw(" idle").dim());
         }
 
         Monitor.PassSummary last = monitor.lastPass();
         Line previous;
         if (last == null) {
-            previous = Line.from(Span.raw(" Last pass  ").gray(), Span.raw("none completed yet").dim());
+            previous = Line.from(Span.raw(" no pass completed yet").dim());
         } else {
             CrawlStats s = last.stats();
             previous = Line.from(
-                    Span.raw(" Last pass  ").gray(),
-                    Span.raw("#" + last.number() + " ").white(),
+                    Span.raw(" #" + last.number() + "  ").white(),
                     Span.raw(s.ok() + " good").green().bold(),
                     Span.raw("   " + s.broken() + " broken").fg(s.broken() > 0 ? Color.RED : Color.GREEN).bold(),
                     Span.raw("   " + s.blocked() + " unverified").fg(s.blocked() > 0 ? Color.YELLOW : Color.GREEN),
                     Span.raw("   " + last.slow() + " slow").fg(last.slow() > 0 ? Color.MAGENTA : Color.GREEN),
+                    Span.raw("   " + s.pages() + " pages   " + s.requests() + " requests").white(),
                     Span.raw("   took " + Report.duration(s.elapsed()) + ", finished " + last.finishedAt().format(TIME)).dim());
         }
         return panel(richText(Text.from(target, now, previous)))
@@ -361,16 +368,23 @@ public final class Dashboard {
             spans.add(Span.raw(pad(r.statusLabel(), 4)).fg(color).bold());
             spans.add(Span.raw(r.url().toString()).hyperlink(r.url().toString()));
             spans.add(Span.raw("  " + r.detail()).fg(isBroken ? Color.LIGHT_RED : Color.LIGHT_YELLOW));
-            if (r.referrer() != null) {
-                spans.add(Span.raw("  on " + r.referrer()).dim());
-            }
-            rows.add(richText(Text.from(Line.from(spans))).ellipsis());
+            rows.add(richText(Text.from(Line.from(spans), foundOn(r, 7))).ellipsis());
         }
         return list(rows.toArray(StyledElement<?>[]::new))
                 .displayOnly()
                 .title(String.format(" Broken links: %d broken, %d unverified ", broken, bad.size() - broken))
                 .rounded()
                 .borderColor(broken > 0 ? Color.RED : Color.YELLOW);
+    }
+
+    /** Second row line under a bad link: the page it was found on, indented to line up with the URL. */
+    private static Line foundOn(LinkResult r, int indent) {
+        String pad = " ".repeat(indent);
+        if (r.referrer() == null) {
+            return Line.from(Span.raw(pad + "start URL").dim());
+        }
+        String page = r.referrer().toString();
+        return Line.from(Span.raw(pad + "on ").dim(), Span.raw(page).hyperlink(page).dim());
     }
 
     private StyledElement<?> slowPanel() {
@@ -420,10 +434,7 @@ public final class Dashboard {
             spans.add(Span.raw(pad(isBroken ? "broken" : "unverified", 11)).fg(color));
             spans.add(Span.raw(pad(url, urlWidth)).hyperlink(url));
             spans.add(Span.raw("  " + r.detail()).fg(isBroken ? Color.LIGHT_RED : Color.LIGHT_YELLOW));
-            if (r.referrer() != null) {
-                spans.add(Span.raw("  on " + r.referrer()).dim());
-            }
-            rows.add(richText(Text.from(Line.from(spans))).ellipsis());
+            rows.add(richText(Text.from(Line.from(spans), foundOn(r, 15))).ellipsis());
         }
         StringBuilder codes = new StringBuilder();
         byCode.forEach((code, n) -> codes.append(codes.isEmpty() ? "" : ", ").append(n).append(" × ").append(code));

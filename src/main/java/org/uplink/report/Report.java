@@ -16,8 +16,8 @@ public final class Report {
 
     /** One-line progress summary. */
     public static String progressLine(CrawlStats s) {
-        return String.format("checked %d | good %d | broken %d | unverified %d | in flight %d | queued %d | pages %d | %s",
-                s.checked(), s.ok(), s.broken(), s.blocked(), s.inFlight(), s.queued(), s.pages(),
+        return String.format("checked %d | good %d | broken %d | unverified %d | in flight %d | queued %d | pages %d | requests %d | %s",
+                s.checked(), s.ok(), s.broken(), s.blocked(), s.inFlight(), s.queued(), s.pages(), s.requests(),
                 duration(s.elapsed()));
     }
 
@@ -34,11 +34,12 @@ public final class Report {
         StringBuilder sb = new StringBuilder();
         sb.append('\n').append("uplink report for ").append(root).append('\n');
         sb.append(cancelled ? "Cancelled after " : "Finished in ").append(duration(s.elapsed()))
-                .append(" - ").append(s.checked()).append(" unique links checked, ")
-                .append(s.pages()).append(" pages crawled").append('\n').append('\n');
+                .append(" - ").append(s.checked()).append(" unique links checked").append('\n').append('\n');
+        sb.append(String.format("  Pages crawled:     %d%n", s.pages()));
+        sb.append(String.format("  Requests sent:     %d  (retries, HEAD-to-GET fallbacks and redirects included)%n", s.requests()));
         sb.append(String.format("  Good links:        %d%n", s.ok()));
         sb.append(String.format("  Broken links:      %d%n", s.broken()));
-        sb.append(String.format("  Unverified links:  %d  (server refused automated access)%n", s.blocked()));
+        sb.append(String.format("  Unverified links:  %d  (server refused automated access, or link to localhost)%n", s.blocked()));
 
         List<LinkResult> bad = badLinks(results);
         appendSection(sb, "Broken links", bad.stream().filter(r -> r.outcome() == LinkResult.Outcome.BROKEN).toList());

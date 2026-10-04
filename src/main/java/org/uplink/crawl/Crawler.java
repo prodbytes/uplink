@@ -35,22 +35,25 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 
 /**
- * Breadth-first link checker. Pages on the start URL's site are fetched, parsed and
- * their links followed; links to other sites are checked once and never followed.
+ * Breadth-first link checker. Pages on the start URL's site, or on any other allowed
+ * site, are fetched, parsed and their links followed; links to other sites are checked
+ * once and never followed.
  */
 public final class Crawler {
 
     /**
      * @param perHost     most concurrent requests to any one host (politeness towards the crawled site)
      * @param maxInFlight most concurrent requests overall
+     * @param followRedirects whether redirects are followed (except HTTPS to HTTP); when not, a 3xx counts as OK
      */
-    public record Options(int perHost, int maxInFlight, Duration timeout, int maxPages, String userAgent) {
+    public record Options(int perHost, int maxInFlight, Duration timeout, int maxPages, String userAgent,
+            boolean followRedirects) {
 
         public static final String DEFAULT_USER_AGENT =
                 "Mozilla/5.0 (compatible; uplink/1.0; link checker) AppleWebKit/537.36 (KHTML, like Gecko)";
 
         public static Options defaults() {
-            return new Options(8, 64, Duration.ofSeconds(20), 10_000, DEFAULT_USER_AGENT);
+            return new Options(8, 64, Duration.ofSeconds(20), 10_000, DEFAULT_USER_AGENT, true);
         }
     }
 
@@ -72,6 +75,8 @@ public final class Crawler {
             Map.entry(999, "Request Denied"));
 
     private final URI root;
+    /** Sites whose pages are crawled: the root's first, then any others allowed. */
+    private final List<URI> sites;
     private final Options options;
     private final CrawlListener listener;
     private final HttpClient client;
@@ -92,19 +97,36 @@ public final class Crawler {
     private volatile boolean cancelled;
 
     public Crawler(URI root, Options options, CrawlListener listener) {
-        this.root = Links.normalize(root).orElseThrow(() -> new IllegalArgumentException("Not an http(s) URL: " + root));
+        this(List.of(root), options, listener);
+    }
+
+    /**
+     * @param sites the start URL, followed by any other sites whose pages are crawled too
+     */
+    public Crawler(List<URI> sites, Options options, CrawlListener listener) {
+        if (sites.isEmpty()) {
+            throw new IllegalArgumentException("No start URL");
+        }
+        this.sites = sites.stream()
+                .map(site -> Links.normalize(site).orElseThrow(() -> new IllegalArgumentException("Not an http(s) URL: " + site)))
+                .toList();
+        this.root = this.sites.getFirst();
         this.options = options;
         this.listener = listener;
         this.globalPermits = new Semaphore(options.maxInFlight());
         this.client = HttpClient.newBuilder()
                 .executor(httpExecutor)
-                .followRedirects(HttpClient.Redirect.NORMAL)
+                .followRedirects(options.followRedirects() ? HttpClient.Redirect.NORMAL : HttpClient.Redirect.NEVER)
                 .connectTimeout(options.timeout())
                 .build();
     }
 
     public URI root() {
         return root;
+    }
+
+    public List<URI> sites() {
+        return sites;
     }
 
     public CrawlStats stats() {
@@ -168,7 +190,7 @@ public final class Crawler {
         if (cancelled) {
             return;
         }
-        boolean internal = Links.sameSite(root, url);
+        boolean internal = Links.inSites(sites, url);
         // Always host first, then global: a thread never holds a global permit while
         // waiting for a host one, so slow hosts cannot starve the others.
         Semaphore hostPermit = hostPermits.computeIfAbsent(hostKey(url, internal), k -> new Semaphore(options.perHost()));
@@ -191,7 +213,9 @@ public final class Crawler {
         try {
             listener.onCheckStarted(url, internal);
             long start = System.nanoTime();
-            Check check = internal ? fetchPage(url) : checkExternal(url);
+            Check check = internal ? fetchPage(url)
+                    : Links.isLocal(url) ? Check.LOCAL
+                    : checkExternal(url);
             Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
             result = new LinkResult(url, referrer, internal, check.status, check.outcome, check.detail, elapsed);
             children = check.links;
@@ -214,12 +238,15 @@ public final class Crawler {
         }
     }
 
-    /** The crawled site (with and without www.) shares one limit; other hosts get their own. */
+    /** Each crawled site (with and without www.) shares one limit; other hosts get their own. */
     private static String hostKey(URI url, boolean internal) {
-        return internal ? "" : url.getHost() + ":" + url.getPort();
+        return (internal ? Links.siteHost(url) : url.getHost()) + ":" + url.getPort();
     }
 
     private record Check(int status, LinkResult.Outcome outcome, String detail, List<URI> links) {
+
+        /** A link to localhost outside the crawled sites: visitors cannot open it, and it is never requested. */
+        static final Check LOCAL = new Check(0, LinkResult.Outcome.BLOCKED, "links to localhost", List.of());
 
         static Check of(int status) {
             LinkResult.Outcome outcome = status < 400 ? LinkResult.Outcome.OK
@@ -250,7 +277,7 @@ public final class Crawler {
         try (InputStream body = response.body()) {
             boolean followable = check.outcome == LinkResult.Outcome.OK
                     && isHtml(response.headers())
-                    && Links.sameSite(root, finalUri)
+                    && Links.inSites(sites, finalUri)
                     && notYetSeenRedirectTarget(url, finalUri)
                     && stats.pages() < options.maxPages();
             if (!followable) {
@@ -316,7 +343,14 @@ public final class Crawler {
                 throw new IOException("cancelled");
             }
             try {
-                HttpResponse<T> response = client.send(request, handler);
+                HttpResponse<T> response;
+                try {
+                    response = client.send(request, handler);
+                } catch (IOException e) {
+                    stats.requests.incrementAndGet();
+                    throw e;
+                }
+                stats.requests.addAndGet(hops(response));
                 if (attempt == 1 && RETRY_STATUSES.contains(response.statusCode())) {
                     if (response.body() instanceof InputStream in) {
                         in.close();
@@ -334,6 +368,15 @@ public final class Crawler {
         }
         // Only reachable when the second attempt failed with an exception.
         throw lastError;
+    }
+
+    /** Requests behind a response: one, plus one per redirect the client followed to get it. */
+    private static int hops(HttpResponse<?> response) {
+        int hops = 1;
+        for (var previous = response.previousResponse(); previous.isPresent(); previous = previous.get().previousResponse()) {
+            hops++;
+        }
+        return hops;
     }
 
     private static long retryDelay(HttpResponse<?> response) {

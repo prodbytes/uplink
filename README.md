@@ -7,19 +7,56 @@ A broken-link checker for websites, built with [Quarkus](https://quarkus.io)
 uplink https://aletyx.ai
 ```
 
+Or run the latest release without installing anything:
+
+```bash
+curl -fsSL https://sh.uplink.nu01.com | sh -s -- https://aletyx.ai
+curl -fsSL https://sh.uplink.nu01.com | sh -s -- ./public --mode=console
+```
+
+[scripts/run.sh](scripts/run.sh) downloads the binary for this machine (Linux
+x64/arm64, macOS on Apple Silicon) from the latest GA release and checks it
+against `SHA256SUMS`. It caches the binary in `~/.cache/uplink/<tag>/` and
+runs it with your arguments. If the URL argument is a local directory, it is
+served on `127.0.0.1` (this needs `python3`) and checked there; it can be
+followed by more sites like a URL (`./public,example.com`). Set
+`UPLINK_TAG` to run a specific release.
+
+The site is two CloudFormation stacks in us-east-1, both deployed by
+[scripts/deploy-sh.sh](scripts/deploy-sh.sh):
+[infra/zone.yaml](infra/zone.yaml) (the `uplink.nu01.com` hosted zone,
+delegated from `nu01.com`) and [infra/sh.yaml](infra/sh.yaml) (ACM
+certificate, private S3 bucket, CloudFront with HTTPS only, and Route 53
+aliases). The deploy script then uploads the script, invalidates the cache
+and smoke-tests the live URL.
+
 uplink crawls every page on the target site, recursively following links on the
 same host (`www.` is ignored, so `example.com` and `www.example.com` count as one
 site). Links to other sites, including other subdomains, are checked once and
 never followed, so it never crawls beyond the target. At the end it reports the
-number of good links and lists each bad one with the page it was found on.
+pages crawled, the HTTP requests sent (retries, `HEAD`-to-`GET` fallbacks and
+redirect hops included) and the number of good links, and lists each bad one
+with the page it was found on.
+
+To crawl more than one site, list the others after the URL, separated by `,`
+or `;`. Pages on any of them are followed; every other link is still only
+checked. The extra sites can be URLs or bare hosts (`https` is assumed), and
+the first one is where the crawl starts:
+
+```bash
+uplink "https://aletyx.ai,docs.aletyx.ai;https://blog.aletyx.ai"
+```
+
+Quote the argument when it contains `;`, which the shell would otherwise treat
+as the end of the command.
 
 Results fall into three groups:
 
 | Result | Meaning |
 |--------|---------|
-| Good | 2xx/3xx response (redirects are followed) |
+| Good | 2xx response at the end of any redirects, or a 3xx when redirects are not followed |
 | Broken | 4xx/5xx, DNS failure, refused connection, timeout or TLS error |
-| Unverified | The server refused automated access (401, 403, 429, LinkedIn's 999); the link probably works in a browser |
+| Unverified | The server refused automated access (401, 403, 429, LinkedIn's 999), so the link probably works in a browser; or the link points at `localhost` (or another loopback address) outside the crawled sites, which only works on the author's machine and is never requested |
 
 External links are checked with `HEAD`, falling back to `GET` when the server
 rejects `HEAD`. Each request is retried once after a network error or a 429/502/503/504.
@@ -62,10 +99,17 @@ Override the detection with `--mode=tui` or `--mode=console`.
 ### Options
 
 ```
-uplink [-hV] [-c=<per-host>] [--max-in-flight=<n>] [--max-pages=<n>]
-       [--mode=auto|tui|console] [--interval=<seconds>] [--slow=<ms>]
-       [--summary-interval=<seconds>] [-t=<seconds>] URL
+uplink [-hV] [--[no-]follow-redirects] [-c=<per-host>] [--max-in-flight=<n>]
+       [--max-pages=<n>] [--mode=auto|tui|console] [--interval=<seconds>]
+       [--slow=<ms>] [--summary-interval=<seconds>] [-t=<seconds>]
+       URL[,SITE...]
 ```
+
+Redirects are followed by default (except from HTTPS to HTTP), and the link
+gets the status of where it leads. With `--no-follow-redirects`, or
+`UPLINK_FOLLOW_REDIRECTS=false` in the environment, a 3xx counts as good and
+its target is not checked. The flag overrides the environment variable, which
+accepts `true` or `false`.
 
 Exit codes: `0` no broken links, `1` broken links found (fails the CI job),
 `2` invalid arguments. Unverified links do not fail the run.

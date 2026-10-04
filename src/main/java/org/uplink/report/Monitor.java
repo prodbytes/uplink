@@ -87,8 +87,8 @@ public final class Monitor implements CrawlListener {
 
         CrawlStats s = crawler.stats();
         lastPass = new PassSummary(number, s, slow.size(), newlyBad.get(), recovered.get(), LocalTime.now());
-        event(Kind.PASS, String.format("Pass #%d finished in %s: %d good, %d broken, %d unverified, %d slow (%d new problems, %d recovered)",
-                number, Report.duration(s.elapsed()), s.ok(), s.broken(), s.blocked(), slow.size(),
+        event(Kind.PASS, String.format("Pass #%d finished in %s: %d pages, %d requests, %d good, %d broken, %d unverified, %d slow (%d new problems, %d recovered)",
+                number, Report.duration(s.elapsed()), s.pages(), s.requests(), s.ok(), s.broken(), s.blocked(), slow.size(),
                 newlyBad.get(), recovered.get()));
     }
 

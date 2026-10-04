@@ -83,7 +83,8 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${surefire-plugin.version}</version>
                 <configuration>
-                    <argLine>@{argLine}</argLine>
+                    <!-- Resolves the test site's fake external host; see TestSite. -->
+                    <argLine>@{argLine} -Djdk.net.hosts.file=${project.basedir}/src/test/hosts</argLine>
                     <systemPropertyVariables>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                         <maven.home>${maven.home}</maven.home>

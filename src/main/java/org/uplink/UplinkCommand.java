@@ -3,6 +3,7 @@ package org.uplink;
 import java.io.PrintStream;
 import java.net.URI;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 
@@ -24,6 +25,7 @@ import picocli.CommandLine.Spec;
         description = {
                 "Crawls a website and reports broken links.",
                 "Pages on the same site are crawled recursively; links to other sites are checked but not followed.",
+                "More sites to crawl can follow the URL, separated by , or ; (e.g. https://example.com,docs.example.com).",
                 "On a desktop terminal it runs a monitoring dashboard that re-checks the site in a loop until Ctrl+C.",
                 "In CI/CD it crawls once, logs to the console and exits non-zero if any link is broken."
         },
@@ -40,7 +42,9 @@ public class UplinkCommand implements Callable<Integer> {
     @Spec
     CommandSpec spec;
 
-    @Parameters(index = "0", arity = "0..1", paramLabel = "URL", description = "http(s) URL to crawl, e.g. https://example.com")
+    @Parameters(index = "0", arity = "0..1", paramLabel = "URL[,SITE...]",
+            description = "http(s) URL to crawl, e.g. https://example.com, optionally followed by more sites"
+                    + " (URLs or hosts, separated by , or ;) whose pages are crawled too")
     String url;
 
     @Option(names = "--mode", defaultValue = "auto",
@@ -73,13 +77,20 @@ public class UplinkCommand implements Callable<Integer> {
             description = "Response time in milliseconds from which a link counts as slow (default: ${DEFAULT-VALUE})")
     int slowMillis;
 
+    @Option(names = "--follow-redirects", negatable = true, fallbackValue = "true",
+            defaultValue = "${env:UPLINK_FOLLOW_REDIRECTS:-true}",
+            description = "Follow redirects and check where they lead; with --no-follow-redirects a 3xx counts as good"
+                    + " (default: ${DEFAULT-VALUE}, from UPLINK_FOLLOW_REDIRECTS when set)")
+    boolean followRedirects;
+
     @Override
     public Integer call() throws Exception {
         PrintStream out = System.out;
-        Optional<URI> start = Links.parseStartUrl(url);
-        if (start.isEmpty()) {
+        Optional<List<URI>> sites = Links.parseSites(url);
+        if (sites.isEmpty()) {
             if (url != null) {
-                System.err.println("uplink: the first argument must be an http(s) URL, got: " + url);
+                System.err.println("uplink: the first argument must be an http(s) URL, optionally followed by"
+                        + " more sites separated by , or ;, got: " + url);
             }
             spec.commandLine().usage(System.err);
             return 2;
@@ -99,7 +110,7 @@ public class UplinkCommand implements Callable<Integer> {
         String reason = mode == Mode.auto ? env.reason() : "--mode=" + mode;
 
         Crawler.Options options = new Crawler.Options(concurrency, maxInFlight, Duration.ofSeconds(timeoutSeconds),
-                maxPages, Crawler.Options.DEFAULT_USER_AGENT);
+                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects);
         ToolkitRunner terminal = null;
         if (tui) {
             try {
@@ -110,13 +121,13 @@ public class UplinkCommand implements Callable<Integer> {
             }
         }
         if (terminal != null) {
-            Dashboard dashboard = new Dashboard(start.get(), options, Duration.ofSeconds(intervalSeconds),
+            Dashboard dashboard = new Dashboard(sites.get(), options, Duration.ofSeconds(intervalSeconds),
                     Duration.ofMillis(slowMillis));
             return dashboard.run(terminal, out) ? 1 : 0;
         }
         // CI/CD: a single pass; the exit code fails the pipeline when a link is broken.
         ConsoleReporter reporter = new ConsoleReporter(out, Duration.ofSeconds(summaryIntervalSeconds));
-        Crawler crawler = new Crawler(start.get(), options, reporter);
+        Crawler crawler = new Crawler(sites.get(), options, reporter);
         reporter.run(crawler, reason);
         return crawler.stats().broken() > 0 ? 1 : 0;
     }

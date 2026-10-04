@@ -32,6 +32,19 @@ class LinksTest {
     }
 
     @Test
+    void isLocalMatchesLoopbackHosts() {
+        assertTrue(Links.isLocal(URI.create("http://localhost:3000/")));
+        assertTrue(Links.isLocal(URI.create("http://LocalHost/")));
+        assertTrue(Links.isLocal(URI.create("http://app.localhost/")));
+        assertTrue(Links.isLocal(URI.create("http://127.0.0.1:8080/x")));
+        assertTrue(Links.isLocal(URI.create("http://[::1]/")));
+        assertTrue(Links.isLocal(URI.create("http://0.0.0.0/")));
+        assertFalse(Links.isLocal(URI.create("https://localhost.example.com/")));
+        assertFalse(Links.isLocal(URI.create("https://aletyx.ai/")));
+        assertFalse(Links.isLocal(URI.create("mailto:someone@example.com")));
+    }
+
+    @Test
     void resolveToleratesUnescapedCharacters() {
         assertEquals("https://example.com/a%20b", Links.resolve("https://example.com/a b").orElseThrow().toString());
     }
@@ -43,6 +56,25 @@ class LinksTest {
         assertTrue(Links.sameSite(root, URI.create("http://aletyx.ai/x")));
         assertFalse(Links.sameSite(root, URI.create("https://docs.aletyx.ai/")));
         assertFalse(Links.sameSite(root, URI.create("https://example.com/")));
+    }
+
+    @Test
+    void parseSitesSplitsOnCommaAndSemicolon() {
+        assertEquals(List.of(URI.create("https://aletyx.ai/"), URI.create("https://docs.aletyx.ai/"),
+                        URI.create("http://localhost:8080/x")),
+                Links.parseSites("https://aletyx.ai, docs.aletyx.ai;http://localhost:8080/x;").orElseThrow());
+        assertEquals(List.of(URI.create("https://aletyx.ai/")), Links.parseSites("https://aletyx.ai").orElseThrow());
+        assertTrue(Links.parseSites("aletyx.ai,https://docs.aletyx.ai").isEmpty(), "the start must be a full URL");
+        assertTrue(Links.parseSites("https://aletyx.ai,ftp://files.aletyx.ai").isEmpty());
+        assertTrue(Links.parseSites(",https://aletyx.ai").isEmpty());
+    }
+
+    @Test
+    void inSitesMatchesAnyAllowedSite() {
+        List<URI> sites = List.of(URI.create("https://aletyx.ai/"), URI.create("https://docs.aletyx.ai/"));
+        assertTrue(Links.inSites(sites, URI.create("https://www.aletyx.ai/x")));
+        assertTrue(Links.inSites(sites, URI.create("https://docs.aletyx.ai/y")));
+        assertFalse(Links.inSites(sites, URI.create("https://blog.aletyx.ai/")));
     }
 
     @Test
