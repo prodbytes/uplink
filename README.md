@@ -99,7 +99,7 @@ Override the detection with `--mode=tui` or `--mode=console`.
 ### Options
 
 ```
-uplink [-hV] [--[no-]follow-redirects] [-c=<per-host>] [--max-in-flight=<n>]
+uplink [-hV] [--[no-]follow-redirects] [--[no-]sitemap] [-c=<per-host>] [--max-in-flight=<n>]
        [--max-pages=<n>] [--mode=auto|tui|console] [--interval=<seconds>]
        [--slow=<ms>] [--summary-interval=<seconds>] [-t=<seconds>]
        URL[,SITE...]
@@ -110,6 +110,13 @@ gets the status of where it leads. With `--no-follow-redirects`, or
 `UPLINK_FOLLOW_REDIRECTS=false` in the environment, a 3xx counts as good and
 its target is not checked. The flag overrides the environment variable, which
 accepts `true` or `false`.
+
+The pages listed in each site's sitemaps are crawled too: the `Sitemap:` lines
+of its `robots.txt`, or `/sitemap.xml` when there are none, following sitemap
+indexes. That reaches pages no link leads to without JavaScript, such as a
+Substack's posts behind its sign-up page, and pages nothing links to at all. A
+page found only there is reported as found on the sitemap. `--no-sitemap` only
+follows links.
 
 Exit codes: `0` no broken links, `1` broken links found (fails the CI job),
 `2` invalid arguments. Unverified links do not fail the run.

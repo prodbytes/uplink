@@ -13,8 +13,12 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.channels.UnresolvedAddressException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -28,16 +32,20 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.GZIPInputStream;
 
 import javax.net.ssl.SSLException;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.parser.Parser;
 
 /**
  * Breadth-first link checker. Pages on the start URL's site, or on any other allowed
  * site, are fetched, parsed and their links followed; links to other sites are checked
- * once and never followed.
+ * once and never followed. The pages listed in each site's sitemaps are crawled too, so
+ * pages that no link reaches without JavaScript (e.g. behind a sign-up wall) are found.
  */
 public final class Crawler {
 
@@ -45,20 +53,24 @@ public final class Crawler {
      * @param perHost     most concurrent requests to any one host (politeness towards the crawled site)
      * @param maxInFlight most concurrent requests overall
      * @param followRedirects whether redirects are followed (except HTTPS to HTTP); when not, a 3xx counts as OK
+     * @param sitemaps    whether the pages in each site's sitemaps (from robots.txt, else /sitemap.xml) are crawled too
      */
     public record Options(int perHost, int maxInFlight, Duration timeout, int maxPages, String userAgent,
-            boolean followRedirects) {
+            boolean followRedirects, boolean sitemaps) {
 
         public static final String DEFAULT_USER_AGENT =
                 "Mozilla/5.0 (compatible; uplink/1.0; link checker) AppleWebKit/537.36 (KHTML, like Gecko)";
 
         public static Options defaults() {
-            return new Options(8, 64, Duration.ofSeconds(20), 10_000, DEFAULT_USER_AGENT, true);
+            return new Options(8, 64, Duration.ofSeconds(20), 10_000, DEFAULT_USER_AGENT, true, true);
         }
     }
 
     /** Largest HTML body parsed for links; anything beyond is ignored. */
     private static final int MAX_PAGE_BYTES = 10 * 1024 * 1024;
+
+    /** Most sitemap files read per crawl, including those listed in sitemap indexes. */
+    private static final int MAX_SITEMAPS = 50;
 
     /** Statuses meaning "the server refused the robot", not "the page is missing". */
     private static final Set<Integer> BLOCKED_STATUSES = Set.of(401, 403, 429, 999);
@@ -141,7 +153,24 @@ public final class Crawler {
     /** Crawls until every reachable link has been checked or {@link #cancel()} is called. */
     public void run() throws InterruptedException {
         try {
+            // Held until the sitemaps are read, so the crawl cannot end before their pages are queued.
+            pending.incrementAndGet();
             submit(root, null);
+            if (options.sitemaps()) {
+                try {
+                    executor.execute(() -> {
+                        try {
+                            submitSitemapPages();
+                        } finally {
+                            taskDone();
+                        }
+                    });
+                } catch (RejectedExecutionException e) {
+                    taskDone();
+                }
+            } else {
+                taskDone();
+            }
             done.await();
         } finally {
             stats.finish();
@@ -235,6 +264,71 @@ public final class Crawler {
         listener.onResult(result);
         for (URI child : children) {
             submit(child, url);
+        }
+    }
+
+    /**
+     * Queues every page on the crawled sites that their sitemaps list, with the sitemap as
+     * the referrer. Sitemap indexes are followed; at most {@link Options#maxPages()} pages
+     * are queued this way. Sitemap requests are not link checks, so they are not counted.
+     */
+    private void submitSitemapPages() {
+        Set<URI> read = new HashSet<>();
+        int queued = 0;
+        try {
+            for (URI site : sites) {
+                Deque<URI> sitemaps = new ArrayDeque<>(sitemapsOf(site));
+                while (!sitemaps.isEmpty() && read.size() < MAX_SITEMAPS && !cancelled) {
+                    URI sitemap = sitemaps.poll();
+                    if (!read.add(sitemap)) {
+                        continue;
+                    }
+                    Optional<String> xml = fetchText(sitemap, sitemap.getPath().endsWith(".gz"));
+                    if (xml.isEmpty()) {
+                        continue;
+                    }
+                    Document doc = Jsoup.parse(xml.get(), sitemap.toString(), Parser.xmlParser());
+                    for (Element loc : doc.select("sitemapindex > sitemap > loc")) {
+                        Links.parseStartUrl(loc.text()).ifPresent(sitemaps::add);
+                    }
+                    for (Element loc : doc.select("urlset > url > loc")) {
+                        Optional<URI> page = Links.parseStartUrl(loc.text()).filter(url -> Links.inSites(sites, url));
+                        if (page.isPresent() && queued < options.maxPages()) {
+                            submit(page.get(), sitemap);
+                            queued++;
+                        }
+                    }
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** The sitemaps robots.txt declares for a site, or its /sitemap.xml when it declares none. */
+    private List<URI> sitemapsOf(URI site) throws InterruptedException {
+        List<URI> declared = fetchText(site.resolve("/robots.txt"), false).stream()
+                .flatMap(String::lines)
+                .map(String::trim)
+                .filter(line -> line.regionMatches(true, 0, "sitemap:", 0, 8))
+                .flatMap(line -> Links.parseStartUrl(line.substring(8)).stream())
+                .toList();
+        return declared.isEmpty() ? List.of(site.resolve("/sitemap.xml")) : declared;
+    }
+
+    /** The body of a 200 response (gunzipped when asked), or empty on any other status or error. */
+    private Optional<String> fetchText(URI url, boolean gzip) throws InterruptedException {
+        try {
+            HttpResponse<InputStream> response = client.send(request(url, "GET"), HttpResponse.BodyHandlers.ofInputStream());
+            try (InputStream body = response.body()) {
+                if (response.statusCode() != 200) {
+                    return Optional.empty();
+                }
+                InputStream in = gzip ? new GZIPInputStream(body) : body;
+                return Optional.of(new String(in.readNBytes(MAX_PAGE_BYTES), StandardCharsets.UTF_8));
+            }
+        } catch (IOException | IllegalArgumentException e) {
+            return Optional.empty();
         }
     }
 
