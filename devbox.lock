@@ -53,31 +53,41 @@
         }
       }
     },
-    "graalvmPackages.graalvm-ce-musl@latest": {
-      "last_modified": "2026-06-27T07:37:20Z",
-      "resolved": "github:NixOS/nixpkgs/3d46470bb3030020f7e1361f33514854f5bfa86d#graalvmPackages.graalvm-ce-musl",
+    "graalvmPackages.graalvm-ce@latest": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#graalvmPackages.graalvm-ce",
       "source": "devbox-search",
-      "version": "25.0.2",
+      "version": "25.2.4",
       "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/q7w5ddg6c7bjh674qlr7nmsypks73p62-graalvm-ce-25.2.4",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/q7w5ddg6c7bjh674qlr7nmsypks73p62-graalvm-ce-25.2.4"
+        },
         "aarch64-linux": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/x6rw5sh5s688g5k3587aamxbhvxbd01c-graalvm-ce-25.0.2",
+              "path": "/nix/store/k27n9jwk3jwk8bdqkz0b0gkcxksq4rqk-graalvm-ce-25.2.4",
               "default": true
             }
           ],
-          "store_path": "/nix/store/x6rw5sh5s688g5k3587aamxbhvxbd01c-graalvm-ce-25.0.2"
+          "store_path": "/nix/store/k27n9jwk3jwk8bdqkz0b0gkcxksq4rqk-graalvm-ce-25.2.4"
         },
         "x86_64-linux": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/d906gfwf81m3cw1aqprci85bdck6hvns-graalvm-ce-25.0.2",
+              "path": "/nix/store/x7s2lskf44mxg140mxn5rzfxhxp8k2mz-graalvm-ce-25.2.4",
               "default": true
             }
           ],
-          "store_path": "/nix/store/d906gfwf81m3cw1aqprci85bdck6hvns-graalvm-ce-25.0.2"
+          "store_path": "/nix/store/x7s2lskf44mxg140mxn5rzfxhxp8k2mz-graalvm-ce-25.2.4"
         }
       }
     },
