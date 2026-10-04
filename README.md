@@ -22,6 +22,31 @@ served on `127.0.0.1` (this needs `python3`) and checked there; it can be
 followed by more sites like a URL (`./public,example.com`). Set
 `UPLINK_TAG` to run a specific release.
 
+For example, to check the [prodbytes](https://prodbytes.substack.com)
+newsletter:
+
+```bash
+curl -fsSL https://sh.uplink.nu01.com | sh -s -- https://prodbytes.substack.com/archive
+```
+
+`sh -s --` makes `sh` read the script from the pipe and pass everything after
+`--` to uplink. Start at `/archive`: the Substack home page builds its post
+list in JavaScript, so its HTML links to no posts and the crawl would end
+after one page. The archive page links to every post, and the posts link to
+each other. In a terminal this opens the dashboard; add `--mode=console` for a
+single pass that prints a report and exits `1` if any link is broken:
+
+```
+uplink report for https://prodbytes.substack.com/archive
+Finished in 3.1s - 456 unique links checked
+
+  Pages crawled:     34
+  Requests sent:     502  (retries, HEAD-to-GET fallbacks and redirects included)
+  Good links:        451
+  Broken links:      4
+  Unverified links:  1  (server refused automated access)
+```
+
 The site is two CloudFormation stacks in us-east-1, both deployed by
 [scripts/deploy-sh.sh](scripts/deploy-sh.sh):
 [infra/zone.yaml](infra/zone.yaml) (the `uplink.nu01.com` hosted zone,
