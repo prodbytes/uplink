@@ -154,6 +154,35 @@ accepts `true` or `false`.
 Exit codes: `0` no broken links, `1` broken links found (fails the CI job),
 `2` invalid arguments. Unverified links do not fail the run.
 
+### GitHub Action
+
+This repository is also a GitHub Action ([action.yml](action.yml)). It
+downloads the latest GA release for the runner, checks it against
+`SHA256SUMS`, crawls the site in console mode and fails the step when a link
+is broken. The report goes to the job summary.
+
+```yaml
+- uses: prodbytes/uplink@main
+  with:
+    url: https://aletyx.ai
+    args: --max-pages=500        # optional, more uplink options
+    # version: 0.1.202610042105-GA   # optional, a release tag to run
+    # summary: false                 # optional, skip the job summary
+```
+
+`url` takes the same values as the command line, including several sites and a
+directory in the workspace (for example a static site built in an earlier step).
+The step's `exit-code` output is `0`, `1` or `2`, as above; add
+`continue-on-error: true` to report broken links without failing the job. It
+runs on Linux (x64, arm64) and macOS (Apple Silicon) runners.
+
+[Check links](.github/workflows/check-links.yml) is a sample: it checks
+aletyx.ai every Monday and on demand (**Run workflow** takes another URL).
+Some sites block GitHub's runners: Substack's Cloudflare, for one, answers
+them with 403 whatever the User-Agent. The start page then shows up as
+unverified and nothing is crawled, so check that a site lets runners in, or
+use a self-hosted runner.
+
 ### Build and install
 
 Requires GraalVM 25 (`native-image`); Maven comes from the wrapper.

@@ -1,0 +1,86 @@
+# Checks a website for broken links with uplink: downloads the release binary
+# for the runner (scripts/run.sh, which verifies it against SHA256SUMS) and
+# crawls the site in console mode, which uplink picks on GitHub Actions. The
+# step fails when a link is broken; unverified links don't fail it. The final
+# report goes to the job summary.
+#
+#   - uses: prodbytes/uplink@main
+#     with:
+#       url: https://example.com
+#
+# Runs on Linux (x64, arm64) and macOS (Apple Silicon) runners.
+name: uplink link checker
+description: Crawl a website and fail when it has broken links
+author: prodbytes
+branding:
+  icon: link
+  color: blue
+
+inputs:
+  url:
+    description: >-
+      Site to crawl: an http(s) URL, optionally followed by more sites
+      separated by , or ; (pages on all of them are followed). It can also be a
+      directory in the workspace, such as a static site's build output, which
+      is served on 127.0.0.1 (needs python3) and checked there.
+    required: true
+  args:
+    description: >-
+      More uplink options, separated by spaces, e.g. "--max-pages=500
+      --timeout=30". See `uplink --help`.
+    required: false
+    default: ""
+  version:
+    description: Release tag to run, e.g. 0.1.202610041948-GA (default the latest GA release)
+    required: false
+    default: ""
+  summary:
+    description: Add the report to the job summary (true or false)
+    required: false
+    default: "true"
+
+outputs:
+  exit-code:
+    description: 0 no broken links, 1 broken links found, 2 invalid arguments
+    value: ${{ steps.uplink.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - id: uplink
+      shell: bash
+      # Inputs reach the script through the environment, never through
+      # expressions in the script, so they can't inject shell code.
+      env:
+        UPLINK_URL: ${{ inputs.url }}
+        UPLINK_ARGS: ${{ inputs.args }}
+        UPLINK_TAG: ${{ inputs.version }}
+        UPLINK_SUMMARY: ${{ inputs.summary }}
+        RUN_SH: ${{ github.action_path }}/scripts/run.sh
+      run: |
+        set -u
+        report=.uplink.local.log.txt
+        rm -f "$report"
+        # Split args on whitespace; read never expands globs.
+        read -r -a extra <<<"$UPLINK_ARGS"
+        status=0
+        # GITHUB_ACTIONS puts uplink in console mode. ${extra[@]+...} keeps
+        # bash 3.2 (macOS) from failing on an empty array under set -u.
+        sh "$RUN_SH" "$UPLINK_URL" ${extra[@]+"${extra[@]}"} || status=$?
+        echo "exit-code=$status" >>"$GITHUB_OUTPUT"
+        if [[ "$UPLINK_SUMMARY" == true ]]; then
+          {
+            case "$status" in
+              0) echo "### uplink: no broken links" ;;
+              1) echo "### uplink: broken links found" ;;
+              *) echo "### uplink failed (exit code $status)" ;;
+            esac
+            if [[ -f "$report" ]]; then
+              echo '```'
+              cat "$report"
+              echo '```'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+        fi
+        rm -f "$report"
+        exit "$status"
