@@ -9,6 +9,7 @@ import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.uplink.TestSite;
+import org.uplink.VersionProvider;
 import org.uplink.crawl.Crawler;
 import org.uplink.crawl.LinkResult;
 import org.uplink.crawl.LinkResult.Outcome;
@@ -109,6 +110,15 @@ class DashboardTest {
         }
         String summary = screen(dashboard);
         assertTrue(summary.contains(" slow (≥ 1000ms)"), summary);
+    }
+
+    @Test
+    void showsVersionInBottomRightCorner() {
+        String[] lines = screen(dashboard()).split("\n");
+        String last = lines[lines.length - 1];
+        String version = VersionProvider.version();
+        assertTrue(last.endsWith((version.equals("dev") ? "" : "v") + version + " "), last);
+        assertTrue(last.startsWith(" 1-3 / ←→ switch tab"), last);
     }
 
     @Test

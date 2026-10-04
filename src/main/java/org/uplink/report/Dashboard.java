@@ -21,6 +21,7 @@ import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import org.uplink.VersionProvider;
 import org.uplink.crawl.CrawlStats;
 import org.uplink.crawl.Crawler;
 import org.uplink.crawl.LinkResult;
@@ -266,7 +267,17 @@ public final class Dashboard {
                 header(crawler),
                 progress(crawler),
                 body.fill(),
-                text(" 1-3 / ←→ switch tab   ↑↓ PgUp PgDn scroll   Ctrl+C stop   |   " + state()).dim().length(1));
+                footer());
+    }
+
+    /** Key help and pass state on the left, the version dimmed in the bottom-right corner. */
+    private Element footer() {
+        String version = VersionProvider.version();
+        version = (version.equals("dev") ? version : "v" + version) + " ";
+        return row(
+                text(" 1-3 / ←→ switch tab   ↑↓ PgUp PgDn scroll   Ctrl+C stop   |   " + state()).dim().fill(),
+                text(version).fg(Color.DARK_GRAY).length(version.length()))
+                .length(1);
     }
 
     private Element tabBar() {
