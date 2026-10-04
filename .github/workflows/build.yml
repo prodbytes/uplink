@@ -44,6 +44,7 @@ permissions:
 
 env:
   JAVA_VERSION: "25"
+  GRAALVM_VERSION: "25.2.4"
 
 jobs:
   prepare:
@@ -135,10 +136,16 @@ jobs:
         include:
           - name: linux-x64
             os: ubuntu-22.04
+            graalvm: graalvm-community-jdk-25i2-25.0.4_linux-x64_bin.tar.gz
+            graalvm_sha256: 3f4a89de8eaa96f2ed677f09957c7e872cd8467aad3537f8b5394c1b8c4b942e
           - name: linux-arm64
             os: ubuntu-22.04-arm
+            graalvm: graalvm-community-jdk-25i2-25.0.4_linux-aarch64_bin.tar.gz
+            graalvm_sha256: 22286f7ecd21b9aedb3226b9bf797469e1bd3eefc491e12ef3dd49b452d230b7
           - name: macos-arm64
             os: macos-latest
+            graalvm: graalvm-community-jdk-25i2-25.0.4_macos-aarch64_bin.tar.gz
+            graalvm_sha256: 507330fff8907de51b8621c95a21a491fa9b0d8c240de184594f40f83add3bfa
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -150,11 +157,27 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
-      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1.6.7
-        with:
-          distribution: graalvm-community
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
+      # GraalVM CE 25.2.4 (JDK 25.0.4), the version devbox.lock pins. Older
+      # 25.0.x builds, which setup-graalvm resolves "25" to, fail on the
+      # TamboUI Panama backend's FFM downcalls ("unexpected input:
+      # linkToNative"). Downloaded directly and checked against its sha256.
+      - name: Install GraalVM CE ${{ env.GRAALVM_VERSION }}
+        env:
+          ASSET: ${{ matrix.graalvm }}
+          SHA256: ${{ matrix.graalvm_sha256 }}
+        run: |
+          url="https://github.com/graalvm/graalvm-ce-builds/releases/download/graal-$GRAALVM_VERSION/$ASSET"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/graalvm.tar.gz" "$url"
+          echo "$SHA256  $RUNNER_TEMP/graalvm.tar.gz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/graalvm"
+          tar -xzf "$RUNNER_TEMP/graalvm.tar.gz" -C "$RUNNER_TEMP/graalvm" --strip-components=1
+          home="$RUNNER_TEMP/graalvm"
+          [[ -d "$home/Contents/Home" ]] && home="$home/Contents/Home"
+          {
+            echo "JAVA_HOME=$home"
+            echo "GRAALVM_HOME=$home"
+          } >> "$GITHUB_ENV"
+          echo "$home/bin" >> "$GITHUB_PATH"
 
       - name: Show the toolchain
         run: |
