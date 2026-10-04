@@ -29,12 +29,22 @@ public final class TestSite implements AutoCloseable {
     private final Map<Boolean, AtomicInteger> peak = Map.of(true, new AtomicInteger(), false, new AtomicInteger());
     private final AtomicInteger activeTotal = new AtomicInteger();
     private final AtomicInteger peakTotal = new AtomicInteger();
+    private volatile boolean sitemaps;
 
     public TestSite() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", this::handle);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
+    }
+
+    /**
+     * Serves robots.txt and sitemaps listing pages that no link reaches: /orphan (which
+     * links to /orphan-child), the missing /gone-orphan, and an external URL.
+     */
+    public TestSite withSitemaps() {
+        sitemaps = true;
+        return this;
     }
 
     public String siteUrl() {
@@ -92,6 +102,9 @@ public final class TestSite implements AutoCloseable {
             return;
         }
         String ext = externalUrl("");
+        if (sitemaps && !external && serveSitemap(ex, path)) {
+            return;
+        }
         switch (external ? "ext:" + path : path) {
             case "/" -> html(ex, """
                     <a href="/a">A</a>
@@ -134,6 +147,40 @@ public final class TestSite implements AutoCloseable {
             }
             default -> respond(ex, 404, "text/plain", "not found");
         }
+    }
+
+    private boolean serveSitemap(HttpExchange ex, String path) throws IOException {
+        String site = siteUrl();
+        switch (path) {
+            case "/robots.txt" -> respond(ex, 200, "text/plain",
+                    "User-agent: *\nDisallow: /private\n\nsitemap: " + site + "sitemap-index.xml\n");
+            case "/sitemap-index.xml" -> respond(ex, 200, "application/xml", """
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                      <sitemap><loc>%1$ssitemap-pages.xml</loc></sitemap>
+                      <sitemap><loc>%1$ssitemap-index.xml</loc></sitemap>
+                    </sitemapindex>
+                    """.formatted(site));
+            case "/sitemap-pages.xml" -> respond(ex, 200, "application/xml", """
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+                            xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+                      <url><loc>%1$s</loc></url>
+                      <url>
+                        <loc> %1$sorphan </loc>
+                        <image:image><image:loc>%1$sorphan.png</image:loc></image:image>
+                      </url>
+                      <url><loc>%1$sgone-orphan</loc></url>
+                      <url><loc>%2$s/ext/from-sitemap</loc></url>
+                    </urlset>
+                    """.formatted(site, externalUrl("")));
+            case "/orphan" -> html(ex, "<a href=\"/orphan-child\">child</a>");
+            case "/orphan-child" -> html(ex, "only linked from /orphan");
+            default -> {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void html(HttpExchange ex, String body) throws IOException {
