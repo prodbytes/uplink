@@ -12,7 +12,7 @@ Toolchain pinned by [devbox.json](devbox.json) and locked in [devbox.lock](devbo
 
 | Tool | Version |
 |------|---------|
-| GraalVM CE (musl) | 25.0.2 |
+| GraalVM CE | 25.0.2 |
 | Node.js | 26.x |
 | Python | 3.14.x |
 | PostgreSQL | 17.x |
