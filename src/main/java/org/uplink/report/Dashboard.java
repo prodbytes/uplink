@@ -341,7 +341,7 @@ public final class Dashboard {
                     Span.raw(s.ok() + " good").green().bold(),
                     Span.raw("   " + s.broken() + " broken").fg(s.broken() > 0 ? Color.RED : Color.GREEN).bold(),
                     Span.raw("   " + s.blocked() + " unverified").fg(s.blocked() > 0 ? Color.YELLOW : Color.GREEN),
-                    Span.raw("   " + last.slow() + " slow").fg(last.slow() > 0 ? Color.MAGENTA : Color.GREEN),
+                    Span.raw("   " + last.slow() + " slow (≥ " + monitor.slowThreshold().toMillis() + "ms)").fg(last.slow() > 0 ? Color.MAGENTA : Color.GREEN),
                     Span.raw("   " + s.pages() + " pages   " + s.requests() + " requests").white(),
                     Span.raw("   took " + Report.duration(s.elapsed()) + ", finished " + last.finishedAt().format(TIME)).dim());
         }

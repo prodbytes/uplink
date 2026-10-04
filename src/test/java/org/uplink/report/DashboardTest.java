@@ -8,6 +8,7 @@ import java.time.Duration;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.uplink.TestSite;
 import org.uplink.VersionProvider;
 import org.uplink.crawl.Crawler;
 import org.uplink.crawl.LinkResult;
@@ -97,6 +98,18 @@ class DashboardTest {
         assertEquals(Dashboard.Tab.SUMMARY, dashboard.tab());
         dashboard.handle(KeyEvent.ofKey(KeyCode.LEFT));
         assertEquals(Dashboard.Tab.LATENCY, dashboard.tab());
+    }
+
+    @Test
+    void headerShowsSlowThresholdNextToSlowCount() throws Exception {
+        Dashboard dashboard = dashboard();
+        try (TestSite site = new TestSite()) {
+            Crawler crawler = new Crawler(URI.create(site.siteUrl()), Crawler.Options.defaults(), dashboard.monitor());
+            crawler.run();
+            dashboard.monitor().passFinished(1, crawler);
+        }
+        String summary = screen(dashboard);
+        assertTrue(summary.contains(" slow (≥ 1000ms)"), summary);
     }
 
     @Test
