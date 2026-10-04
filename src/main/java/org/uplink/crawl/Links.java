@@ -2,7 +2,9 @@ package org.uplink.crawl;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -26,7 +28,41 @@ public final class Links {
      */
     private static final String CLOUDFLARE_EMAIL_PROTECTION = "/cdn-cgi/l/email-protection";
 
+    /** Separates the target from the other allowed sites in the first argument. */
+    private static final String SITE_SEPARATORS = "[,;]";
+
     private Links() {
+    }
+
+    /**
+     * Parses the first argument: the start URL, optionally followed by more sites to
+     * crawl, separated by {@code ,} or {@code ;}, e.g. {@code https://example.com,docs.example.com}.
+     * The start URL must be absolute; the other sites may be bare hosts ({@code https} is assumed).
+     *
+     * @return the allowed sites, starting with the start URL, or empty if any entry is invalid
+     */
+    public static Optional<List<URI>> parseSites(String raw) {
+        if (raw == null) {
+            return Optional.empty();
+        }
+        String[] entries = raw.split(SITE_SEPARATORS);
+        Optional<URI> start = parseStartUrl(entries.length == 0 ? "" : entries[0]);
+        if (start.isEmpty()) {
+            return Optional.empty();
+        }
+        List<URI> sites = new ArrayList<>(List.of(start.get()));
+        for (int i = 1; i < entries.length; i++) {
+            String entry = entries[i].trim();
+            if (entry.isEmpty()) {
+                continue;
+            }
+            Optional<URI> site = parseStartUrl(entry.contains("://") ? entry : "https://" + entry);
+            if (site.isEmpty()) {
+                return Optional.empty();
+            }
+            sites.add(site.get());
+        }
+        return Optional.of(List.copyOf(sites));
     }
 
     /**
@@ -141,7 +177,28 @@ public final class Links {
         return siteHost(root).equals(siteHost(candidate)) && root.getPort() == candidate.getPort();
     }
 
-    private static String siteHost(URI uri) {
+    /** Whether {@code candidate} belongs to any of {@code sites}, as by {@link #sameSite}. */
+    public static boolean inSites(List<URI> sites, URI candidate) {
+        return sites.stream().anyMatch(site -> sameSite(site, candidate));
+    }
+
+    /**
+     * Whether {@code uri} points at the machine it is opened on ({@code localhost},
+     * {@code *.localhost}, 127.0.0.0/8, {@code ::1} or {@code 0.0.0.0}), which works
+     * only for whoever runs the server there, not for the site's visitors.
+     */
+    public static boolean isLocal(URI uri) {
+        String host = uri.getHost();
+        if (host == null) {
+            return false;
+        }
+        host = host.toLowerCase(Locale.ROOT);
+        return host.equals("localhost") || host.endsWith(".localhost")
+                || host.matches("127(\\.\\d{1,3}){3}")
+                || host.equals("[::1]") || host.equals("0.0.0.0");
+    }
+
+    static String siteHost(URI uri) {
         String host = uri.getHost().toLowerCase(Locale.ROOT);
         return host.startsWith("www.") ? host.substring(4) : host;
     }

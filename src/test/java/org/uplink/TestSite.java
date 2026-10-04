@@ -14,10 +14,14 @@ import com.sun.net.httpserver.HttpServer;
 
 /**
  * A small website served on the loopback interface. The crawled site is addressed as
- * {@code localhost}; "external" links use {@code 127.0.0.1}, which is the same server
- * but a different host, so the crawler must check them without following them.
+ * {@code localhost}; "external" links use {@code external.test}, which the test JVM
+ * resolves to the same server (see {@code src/test/hosts}), so the crawler must check
+ * them without following them. Loopback addresses cannot be used for this, because
+ * links to them are never requested.
  */
 public final class TestSite implements AutoCloseable {
+
+    private static final String EXTERNAL_HOST = "external.test";
 
     private final HttpServer server;
     private final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
@@ -38,6 +42,11 @@ public final class TestSite implements AutoCloseable {
     }
 
     public String externalUrl(String path) {
+        return "http://" + EXTERNAL_HOST + ":" + server.getAddress().getPort() + path;
+    }
+
+    /** The site on a loopback address that is not the site's own host. */
+    public String localUrl(String path) {
         return "http://127.0.0.1:" + server.getAddress().getPort() + path;
     }
 
@@ -59,7 +68,7 @@ public final class TestSite implements AutoCloseable {
 
     private void handle(HttpExchange ex) throws IOException {
         String host = ex.getRequestHeaders().getFirst("Host");
-        boolean external = host != null && host.startsWith("127.0.0.1");
+        boolean external = host != null && host.startsWith(EXTERNAL_HOST);
         peak.get(external).accumulateAndGet(active.get(external).incrementAndGet(), Math::max);
         peakTotal.accumulateAndGet(activeTotal.incrementAndGet(), Math::max);
         try {
@@ -95,7 +104,8 @@ public final class TestSite implements AutoCloseable {
                     <a href="%1$s/ext/gone">External gone</a>
                     <a href="%1$s/ext/page">External page</a>
                     <a href="%1$s/ext/no-head">External without HEAD</a>
-                    """.formatted(ext));
+                    <a href="%2$s">Local only</a>
+                    """.formatted(ext, localUrl("/local-only")));
             case "/fanout" -> {
                 StringBuilder links = new StringBuilder();
                 for (int i = 0; i < 12; i++) {

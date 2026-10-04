@@ -13,6 +13,7 @@ public final class CrawlStats {
     final AtomicLong blocked = new AtomicLong();
     final AtomicLong inFlight = new AtomicLong();
     final AtomicLong pages = new AtomicLong();
+    final AtomicLong requests = new AtomicLong();
     private final long startNanos = System.nanoTime();
     private volatile long endNanos;
 
@@ -64,6 +65,11 @@ public final class CrawlStats {
     /** Internal HTML pages parsed for links. */
     public long pages() {
         return pages.get();
+    }
+
+    /** HTTP requests sent, counting retries, GET fallbacks after HEAD and every redirect hop. */
+    public long requests() {
+        return requests.get();
     }
 
     public boolean finished() {
