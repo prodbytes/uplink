@@ -46,3 +46,11 @@ jobs:
         run: |
           echo "uplink exit code: ${EXIT_CODE:-none}"
           [[ "$EXIT_CODE" == 0 || "$EXIT_CODE" == 1 ]]
+      # TEMPORARY diagnostics, removed before merge.
+      - if: always()
+        run: |
+          for ua in "uplink/0.1 (+https://github.com/prodbytes/uplink)" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36" "curl/8"; do
+            printf '%s -> ' "$ua"; curl -s -o /dev/null -w '%{http_code}\n' -A "$ua" https://prodbytes.substack.com/ || true
+          done
+          curl -s -D - -o /dev/null https://prodbytes.substack.com/ | grep -iE '^(server|cf-|x-|content-type)' || true
+          curl -s -o /dev/null -w 'example.com %{http_code}\n' https://example.com/
