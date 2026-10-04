@@ -12,9 +12,13 @@ public class VersionProvider implements IVersionProvider {
 
     @Override
     public String[] getVersion() {
-        String version = ConfigProvider.getConfig()
+        return new String[] {"uplink " + version()};
+    }
+
+    /** X.Y.Z, or "dev". */
+    public static String version() {
+        return ConfigProvider.getConfig()
                 .getOptionalValue("quarkus.application.version", String.class)
                 .orElse("dev");
-        return new String[] {"uplink " + version};
     }
 }
