@@ -1,2 +1,2 @@
 # JDK hosts file for the tests (jdk.net.hosts.file); see TestSite.
-127.0.0.1 localhost external.test
+127.0.0.1 localhost external.test sitemap.test

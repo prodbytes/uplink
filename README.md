@@ -35,8 +35,23 @@ same host (`www.` is ignored, so `example.com` and `www.example.com` count as on
 site). Links to other sites, including other subdomains, are checked once and
 never followed, so it never crawls beyond the target. At the end it reports the
 pages crawled, the HTTP requests sent (retries, `HEAD`-to-`GET` fallbacks and
-redirect hops included) and the number of good links, and lists each bad one
-with the page it was found on.
+redirect hops included) and the number of good links, and lists each bad link
+on the crawled sites with the page it was found on. Bad links to other sites
+are only counted.
+
+Before crawling, uplink reads each crawled site's `robots.txt`. If it lists
+`Sitemap:` URLs on that site, those sitemaps are checked like links, and every
+URL they list is crawled too, including the sitemaps listed in a sitemap index.
+This finds pages that no HTML links to, such as Substack posts, whose list on
+the home page is built by JavaScript. A broken URL in a sitemap is reported as
+found on that sitemap. `robots.txt` itself is not reported, and a site without
+one is fine. Pass `--no-sitemaps` to crawl only what is reachable from the
+start URL.
+
+Every run also saves its final report (not the progress lines) to
+`.uplink.local.log.txt` in the current directory, replacing the previous one.
+The dashboard saves the report it prints when you quit. If the file cannot be
+written, uplink prints a warning and the exit code is unchanged.
 
 To crawl more than one site, list the others after the URL, separated by `,`
 or `;`. Pages on any of them are followed; every other link is still only
@@ -99,7 +114,7 @@ Override the detection with `--mode=tui` or `--mode=console`.
 ### Options
 
 ```
-uplink [-hV] [--[no-]follow-redirects] [--[no-]sitemap] [-c=<per-host>] [--max-in-flight=<n>]
+uplink [-hV] [--[no-]follow-redirects] [-c=<per-host>] [--max-in-flight=<n>]
        [--max-pages=<n>] [--mode=auto|tui|console] [--interval=<seconds>]
        [--slow=<ms>] [--summary-interval=<seconds>] [-t=<seconds>]
        URL[,SITE...]
@@ -110,13 +125,6 @@ gets the status of where it leads. With `--no-follow-redirects`, or
 `UPLINK_FOLLOW_REDIRECTS=false` in the environment, a 3xx counts as good and
 its target is not checked. The flag overrides the environment variable, which
 accepts `true` or `false`.
-
-The pages listed in each site's sitemaps are crawled too: the `Sitemap:` lines
-of its `robots.txt`, or `/sitemap.xml` when there are none, following sitemap
-indexes. That reaches pages no link leads to without JavaScript, such as a
-Substack's posts behind its sign-up page, and pages nothing links to at all. A
-page found only there is reported as found on the sitemap. `--no-sitemap` only
-follows links.
 
 Exit codes: `0` no broken links, `1` broken links found (fails the CI job),
 `2` invalid arguments. Unverified links do not fail the run.

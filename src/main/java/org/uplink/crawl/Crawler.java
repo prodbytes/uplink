@@ -15,10 +15,7 @@ import java.net.http.HttpTimeoutException;
 import java.nio.channels.UnresolvedAddressException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,20 +29,17 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.zip.GZIPInputStream;
 
 import javax.net.ssl.SSLException;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
 import org.jsoup.parser.Parser;
 
 /**
  * Breadth-first link checker. Pages on the start URL's site, or on any other allowed
  * site, are fetched, parsed and their links followed; links to other sites are checked
- * once and never followed. The pages listed in each site's sitemaps are crawled too, so
- * pages that no link reaches without JavaScript (e.g. behind a sign-up wall) are found.
+ * once and never followed.
  */
 public final class Crawler {
 
@@ -53,7 +47,7 @@ public final class Crawler {
      * @param perHost     most concurrent requests to any one host (politeness towards the crawled site)
      * @param maxInFlight most concurrent requests overall
      * @param followRedirects whether redirects are followed (except HTTPS to HTTP); when not, a 3xx counts as OK
-     * @param sitemaps    whether the pages in each site's sitemaps (from robots.txt, else /sitemap.xml) are crawled too
+     * @param sitemaps    whether the sitemaps a site declares in its robots.txt seed the crawl
      */
     public record Options(int perHost, int maxInFlight, Duration timeout, int maxPages, String userAgent,
             boolean followRedirects, boolean sitemaps) {
@@ -69,8 +63,8 @@ public final class Crawler {
     /** Largest HTML body parsed for links; anything beyond is ignored. */
     private static final int MAX_PAGE_BYTES = 10 * 1024 * 1024;
 
-    /** Most sitemap files read per crawl, including those listed in sitemap indexes. */
-    private static final int MAX_SITEMAPS = 50;
+    /** Largest robots.txt read for {@code Sitemap:} lines. */
+    private static final int MAX_ROBOTS_BYTES = 512 * 1024;
 
     /** Statuses meaning "the server refused the robot", not "the page is missing". */
     private static final Set<Integer> BLOCKED_STATUSES = Set.of(401, 403, 429, 999);
@@ -153,23 +147,11 @@ public final class Crawler {
     /** Crawls until every reachable link has been checked or {@link #cancel()} is called. */
     public void run() throws InterruptedException {
         try {
-            // Held until the sitemaps are read, so the crawl cannot end before their pages are queued.
-            pending.incrementAndGet();
             submit(root, null);
             if (options.sitemaps()) {
-                try {
-                    executor.execute(() -> {
-                        try {
-                            submitSitemapPages();
-                        } finally {
-                            taskDone();
-                        }
-                    });
-                } catch (RejectedExecutionException e) {
-                    taskDone();
+                for (URI site : sites) {
+                    discoverSitemaps(site);
                 }
-            } else {
-                taskDone();
             }
             done.await();
         } finally {
@@ -209,6 +191,79 @@ public final class Crawler {
         }
     }
 
+    /**
+     * Reads the site's robots.txt in the background and queues the sitemaps it declares,
+     * so pages that no HTML links to (lists built by JavaScript, like Substack's home
+     * page) are still crawled. robots.txt itself is not a link anyone followed, so it is
+     * not reported, and a site without one is not an error.
+     */
+    private void discoverSitemaps(URI site) {
+        pending.incrementAndGet();
+        try {
+            executor.execute(() -> {
+                try {
+                    URI robots = site.resolve("/robots.txt");
+                    for (URI sitemap : withPermits(robots, true, () -> fetchSitemapUrls(robots))) {
+                        submit(sitemap, robots);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    taskDone();
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            taskDone();
+        }
+    }
+
+    /** The {@code Sitemap:} URLs in a robots.txt that are on a crawled site. */
+    private List<URI> fetchSitemapUrls(URI robots) throws InterruptedException {
+        List<URI> sitemaps = new ArrayList<>();
+        try {
+            HttpResponse<InputStream> response = sendWithRetry(request(robots, "GET"), HttpResponse.BodyHandlers.ofInputStream());
+            try (InputStream body = response.body()) {
+                if (response.statusCode() != 200) {
+                    return sitemaps;
+                }
+                String text = new String(body.readNBytes(MAX_ROBOTS_BYTES), StandardCharsets.UTF_8);
+                for (String line : text.split("\\R")) {
+                    int colon = line.indexOf(':');
+                    if (colon > 0 && line.substring(0, colon).trim().equalsIgnoreCase("sitemap")) {
+                        Links.resolve(line.substring(colon + 1).trim())
+                                .filter(uri -> Links.inSites(sites, uri))
+                                .ifPresent(sitemaps::add);
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+            // No robots.txt to read: the crawl just starts from the start URL alone.
+        }
+        return sitemaps;
+    }
+
+    private interface Task<T> {
+        T run() throws InterruptedException;
+    }
+
+    /** Runs a request under the same per-host and global limits as link checks. */
+    private <T> T withPermits(URI url, boolean internal, Task<T> task) throws InterruptedException {
+        // Always host first, then global: a thread never holds a global permit while
+        // waiting for a host one, so slow hosts cannot starve the others.
+        Semaphore hostPermit = hostPermits.computeIfAbsent(hostKey(url, internal), k -> new Semaphore(options.perHost()));
+        hostPermit.acquire();
+        try {
+            globalPermits.acquire();
+            try {
+                return task.run();
+            } finally {
+                globalPermits.release();
+            }
+        } finally {
+            hostPermit.release();
+        }
+    }
+
     private void taskDone() {
         if (pending.decrementAndGet() == 0) {
             done.countDown();
@@ -220,115 +275,38 @@ public final class Crawler {
             return;
         }
         boolean internal = Links.inSites(sites, url);
-        // Always host first, then global: a thread never holds a global permit while
-        // waiting for a host one, so slow hosts cannot starve the others.
-        Semaphore hostPermit = hostPermits.computeIfAbsent(hostKey(url, internal), k -> new Semaphore(options.perHost()));
-        try {
-            hostPermit.acquire();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return;
+        record Checked(LinkResult result, List<URI> links) {
         }
+        Checked checked;
         try {
-            globalPermits.acquire();
-        } catch (InterruptedException e) {
-            hostPermit.release();
-            Thread.currentThread().interrupt();
-            return;
-        }
-        LinkResult result;
-        List<URI> children = List.of();
-        stats.inFlight.incrementAndGet();
-        try {
-            listener.onCheckStarted(url, internal);
-            long start = System.nanoTime();
-            Check check = internal ? fetchPage(url)
-                    : Links.isLocal(url) ? Check.LOCAL
-                    : checkExternal(url);
-            Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
-            result = new LinkResult(url, referrer, internal, check.status, check.outcome, check.detail, elapsed);
-            children = check.links;
+            checked = withPermits(url, internal, () -> {
+                stats.inFlight.incrementAndGet();
+                try {
+                    listener.onCheckStarted(url, internal);
+                    long start = System.nanoTime();
+                    Check check = internal ? fetchPage(url)
+                            : Links.isLocal(url) ? Check.LOCAL
+                            : checkExternal(url);
+                    Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+                    return new Checked(new LinkResult(url, referrer, internal, check.status, check.outcome,
+                            check.detail, elapsed), check.links);
+                } finally {
+                    stats.inFlight.decrementAndGet();
+                }
+            });
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return;
-        } finally {
-            stats.inFlight.decrementAndGet();
-            globalPermits.release();
-            hostPermit.release();
         }
         if (cancelled) {
             return;
         }
+        LinkResult result = checked.result();
         results.add(result);
         stats.record(result);
         listener.onResult(result);
-        for (URI child : children) {
+        for (URI child : checked.links()) {
             submit(child, url);
-        }
-    }
-
-    /**
-     * Queues every page on the crawled sites that their sitemaps list, with the sitemap as
-     * the referrer. Sitemap indexes are followed; at most {@link Options#maxPages()} pages
-     * are queued this way. Sitemap requests are not link checks, so they are not counted.
-     */
-    private void submitSitemapPages() {
-        Set<URI> read = new HashSet<>();
-        int queued = 0;
-        try {
-            for (URI site : sites) {
-                Deque<URI> sitemaps = new ArrayDeque<>(sitemapsOf(site));
-                while (!sitemaps.isEmpty() && read.size() < MAX_SITEMAPS && !cancelled) {
-                    URI sitemap = sitemaps.poll();
-                    if (!read.add(sitemap)) {
-                        continue;
-                    }
-                    Optional<String> xml = fetchText(sitemap, sitemap.getPath().endsWith(".gz"));
-                    if (xml.isEmpty()) {
-                        continue;
-                    }
-                    Document doc = Jsoup.parse(xml.get(), sitemap.toString(), Parser.xmlParser());
-                    for (Element loc : doc.select("sitemapindex > sitemap > loc")) {
-                        Links.parseStartUrl(loc.text()).ifPresent(sitemaps::add);
-                    }
-                    for (Element loc : doc.select("urlset > url > loc")) {
-                        Optional<URI> page = Links.parseStartUrl(loc.text()).filter(url -> Links.inSites(sites, url));
-                        if (page.isPresent() && queued < options.maxPages()) {
-                            submit(page.get(), sitemap);
-                            queued++;
-                        }
-                    }
-                }
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    /** The sitemaps robots.txt declares for a site, or its /sitemap.xml when it declares none. */
-    private List<URI> sitemapsOf(URI site) throws InterruptedException {
-        List<URI> declared = fetchText(site.resolve("/robots.txt"), false).stream()
-                .flatMap(String::lines)
-                .map(String::trim)
-                .filter(line -> line.regionMatches(true, 0, "sitemap:", 0, 8))
-                .flatMap(line -> Links.parseStartUrl(line.substring(8)).stream())
-                .toList();
-        return declared.isEmpty() ? List.of(site.resolve("/sitemap.xml")) : declared;
-    }
-
-    /** The body of a 200 response (gunzipped when asked), or empty on any other status or error. */
-    private Optional<String> fetchText(URI url, boolean gzip) throws InterruptedException {
-        try {
-            HttpResponse<InputStream> response = client.send(request(url, "GET"), HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream body = response.body()) {
-                if (response.statusCode() != 200) {
-                    return Optional.empty();
-                }
-                InputStream in = gzip ? new GZIPInputStream(body) : body;
-                return Optional.of(new String(in.readNBytes(MAX_PAGE_BYTES), StandardCharsets.UTF_8));
-            }
-        } catch (IOException | IllegalArgumentException e) {
-            return Optional.empty();
         }
     }
 
@@ -358,7 +336,10 @@ public final class Crawler {
         }
     }
 
-    /** GETs an internal URL and, when it is an HTML page on this site, extracts its links. */
+    /**
+     * GETs an internal URL and, when it is an HTML page on this site, extracts its links;
+     * when it is an XML sitemap, the URLs it lists.
+     */
     private Check fetchPage(URI url) throws InterruptedException {
         HttpResponse<InputStream> response;
         try {
@@ -369,8 +350,9 @@ public final class Crawler {
         Check check = Check.of(response.statusCode());
         URI finalUri = response.uri();
         try (InputStream body = response.body()) {
+            boolean html = isHtml(response.headers());
             boolean followable = check.outcome == LinkResult.Outcome.OK
-                    && isHtml(response.headers())
+                    && (html || isXml(response.headers()))
                     && Links.inSites(sites, finalUri)
                     && notYetSeenRedirectTarget(url, finalUri)
                     && stats.pages() < options.maxPages();
@@ -378,6 +360,11 @@ public final class Crawler {
                 return check;
             }
             byte[] bytes = body.readNBytes(MAX_PAGE_BYTES);
+            if (!html) {
+                Document xml = Jsoup.parse(new ByteArrayInputStream(bytes), charset(response.headers()),
+                        finalUri.toString(), Parser.xmlParser());
+                return check.withLinks(new ArrayList<>(Links.extractSitemap(xml)));
+            }
             stats.pages.incrementAndGet();
             Document doc = Jsoup.parse(new ByteArrayInputStream(bytes), charset(response.headers()), finalUri.toString());
             return check.withLinks(new ArrayList<>(Links.extract(doc)));
@@ -489,6 +476,11 @@ public final class Crawler {
     private static boolean isHtml(HttpHeaders headers) {
         String type = headers.firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
         return type.contains("text/html") || type.contains("application/xhtml");
+    }
+
+    private static boolean isXml(HttpHeaders headers) {
+        String type = headers.firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
+        return type.contains("/xml") || type.contains("+xml");
     }
 
     /** Charset from Content-Type, or {@code null} to let jsoup sniff it from the document. */

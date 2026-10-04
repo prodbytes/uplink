@@ -1,5 +1,6 @@
 package org.uplink;
 
+import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
 import java.time.Duration;
@@ -11,6 +12,7 @@ import org.uplink.crawl.Crawler;
 import org.uplink.crawl.Links;
 import org.uplink.report.ConsoleReporter;
 import org.uplink.report.Dashboard;
+import org.uplink.report.ReportLog;
 
 import dev.tamboui.toolkit.app.ToolkitRunner;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
@@ -27,7 +29,8 @@ import picocli.CommandLine.Spec;
                 "Pages on the same site are crawled recursively; links to other sites are checked but not followed.",
                 "More sites to crawl can follow the URL, separated by , or ; (e.g. https://example.com,docs.example.com).",
                 "On a desktop terminal it runs a monitoring dashboard that re-checks the site in a loop until Ctrl+C.",
-                "In CI/CD it crawls once, logs to the console and exits non-zero if any link is broken."
+                "In CI/CD it crawls once, logs to the console and exits non-zero if any link is broken.",
+                "Either way, the final report is also saved to .uplink.local.log.txt in the current directory."
         },
         exitCodeListHeading = "%nExit codes:%n",
         exitCodeList = {
@@ -83,11 +86,10 @@ public class UplinkCommand implements Callable<Integer> {
                     + " (default: ${DEFAULT-VALUE}, from UPLINK_FOLLOW_REDIRECTS when set)")
     boolean followRedirects;
 
-    @Option(names = "--sitemap", negatable = true, fallbackValue = "true", defaultValue = "true",
-            description = "Also crawl the pages listed in each site's sitemaps (from robots.txt, else /sitemap.xml),"
-                    + " which finds pages no link reaches without JavaScript; --no-sitemap only follows links"
-                    + " (default: ${DEFAULT-VALUE})")
-    boolean sitemap;
+    @Option(names = "--sitemaps", negatable = true, fallbackValue = "true", defaultValue = "true",
+            description = "Also crawl the pages listed in the sitemaps each site declares in its robots.txt, which"
+                    + " finds pages no HTML links to (default: ${DEFAULT-VALUE})")
+    boolean sitemaps;
 
     @Override
     public Integer call() throws Exception {
@@ -116,7 +118,7 @@ public class UplinkCommand implements Callable<Integer> {
         String reason = mode == Mode.auto ? env.reason() : "--mode=" + mode;
 
         Crawler.Options options = new Crawler.Options(concurrency, maxInFlight, Duration.ofSeconds(timeoutSeconds),
-                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects, sitemap);
+                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects, sitemaps);
         ToolkitRunner terminal = null;
         if (tui) {
             try {
@@ -129,12 +131,23 @@ public class UplinkCommand implements Callable<Integer> {
         if (terminal != null) {
             Dashboard dashboard = new Dashboard(sites.get(), options, Duration.ofSeconds(intervalSeconds),
                     Duration.ofMillis(slowMillis));
-            return dashboard.run(terminal, out) ? 1 : 0;
+            boolean broken = dashboard.run(terminal, out);
+            saveLog(dashboard.finalReport());
+            return broken ? 1 : 0;
         }
         // CI/CD: a single pass; the exit code fails the pipeline when a link is broken.
         ConsoleReporter reporter = new ConsoleReporter(out, Duration.ofSeconds(summaryIntervalSeconds));
         Crawler crawler = new Crawler(sites.get(), options, reporter);
-        reporter.run(crawler, reason);
+        saveLog(reporter.run(crawler, reason));
         return crawler.stats().broken() > 0 ? 1 : 0;
+    }
+
+    /** A log that cannot be written is worth a warning, not a failed check. */
+    private static void saveLog(String report) {
+        try {
+            ReportLog.save(ReportLog.DEFAULT, report);
+        } catch (IOException e) {
+            System.err.println("uplink: cannot save the report to " + ReportLog.DEFAULT + ": " + e.getMessage());
+        }
     }
 }

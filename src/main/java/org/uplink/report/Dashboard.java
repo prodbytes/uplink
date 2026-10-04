@@ -80,6 +80,7 @@ public final class Dashboard {
     private volatile Crawler lastCompleted;
     private volatile int pass;
     private volatile long nextPassAtNanos;
+    private String finalReport = "";
     // Only touched by the render thread, which also handles key events.
     private Tab tab = Tab.SUMMARY;
     private int brokenCursor;
@@ -141,14 +142,22 @@ public final class Dashboard {
         }
         Crawler report = lastCompleted != null ? lastCompleted : current;
         Monitor.PassSummary last = monitor.lastPass();
-        out.println(last == null
+        StringBuilder text = new StringBuilder(last == null
                 ? "uplink stopped during the first pass; partial report:"
-                : "uplink stopped after " + last.number() + " completed pass(es); report of pass #" + last.number() + ":");
+                : "uplink stopped after " + last.number() + " completed pass(es); report of pass #" + last.number() + ":")
+                .append(System.lineSeparator());
         if (report != null) {
-            out.print(Report.totals(report.root(), report.stats(), report.results(), report.isCancelled()));
+            text.append(Report.totals(report.root(), report.stats(), report.results(), report.isCancelled()));
         }
+        finalReport = text.toString();
+        out.print(finalReport);
         out.flush();
         return lastCompleted != null && lastCompleted.stats().broken() > 0;
+    }
+
+    /** What {@link #run} printed when the dashboard closed. */
+    public String finalReport() {
+        return finalReport;
     }
 
     private void loop() {

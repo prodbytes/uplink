@@ -50,16 +50,26 @@ public final class Report {
         return sb.toString();
     }
 
+    /** Lists the links on the crawled sites; links to other sites are only counted. */
     private static void appendSection(StringBuilder sb, String title, List<LinkResult> links) {
         if (links.isEmpty()) {
             return;
         }
         sb.append('\n').append(title).append(" (").append(links.size()).append("):").append('\n');
+        long external = 0;
         for (LinkResult r : links) {
+            if (!r.internal()) {
+                external++;
+                continue;
+            }
             sb.append("  ").append(describe(r)).append('\n');
             if (r.referrer() != null) {
                 sb.append("      found on ").append(r.referrer()).append('\n');
             }
+        }
+        if (external > 0) {
+            sb.append("  ").append(external).append(external == 1 ? " external link" : " external links")
+                    .append(" (not listed)").append('\n');
         }
     }
 

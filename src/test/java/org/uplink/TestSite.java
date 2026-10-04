@@ -22,6 +22,8 @@ import com.sun.net.httpserver.HttpServer;
 public final class TestSite implements AutoCloseable {
 
     private static final String EXTERNAL_HOST = "external.test";
+    /** A site whose home page links nowhere; its pages are only listed in its sitemaps. */
+    private static final String SITEMAP_HOST = "sitemap.test";
 
     private final HttpServer server;
     private final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
@@ -29,7 +31,6 @@ public final class TestSite implements AutoCloseable {
     private final Map<Boolean, AtomicInteger> peak = Map.of(true, new AtomicInteger(), false, new AtomicInteger());
     private final AtomicInteger activeTotal = new AtomicInteger();
     private final AtomicInteger peakTotal = new AtomicInteger();
-    private volatile boolean sitemaps;
 
     public TestSite() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -38,21 +39,16 @@ public final class TestSite implements AutoCloseable {
         server.start();
     }
 
-    /**
-     * Serves robots.txt and sitemaps listing pages that no link reaches: /orphan (which
-     * links to /orphan-child), the missing /gone-orphan, and an external URL.
-     */
-    public TestSite withSitemaps() {
-        sitemaps = true;
-        return this;
-    }
-
     public String siteUrl() {
         return "http://localhost:" + server.getAddress().getPort() + "/";
     }
 
     public String externalUrl(String path) {
         return "http://" + EXTERNAL_HOST + ":" + server.getAddress().getPort() + path;
+    }
+
+    public String sitemapSiteUrl(String path) {
+        return "http://" + SITEMAP_HOST + ":" + server.getAddress().getPort() + path;
     }
 
     /** The site on a loopback address that is not the site's own host. */
@@ -102,10 +98,10 @@ public final class TestSite implements AutoCloseable {
             return;
         }
         String ext = externalUrl("");
-        if (sitemaps && !external && serveSitemap(ex, path)) {
-            return;
-        }
-        switch (external ? "ext:" + path : path) {
+        String map = sitemapSiteUrl("");
+        String host = ex.getRequestHeaders().getFirst("Host");
+        String key = external ? "ext:" + path : host != null && host.startsWith(SITEMAP_HOST) ? "map:" + path : path;
+        switch (key) {
             case "/" -> html(ex, """
                     <a href="/a">A</a>
                     <a href="/a#section">A again</a>
@@ -145,42 +141,31 @@ public final class TestSite implements AutoCloseable {
                     html(ex, "GET works");
                 }
             }
-            default -> respond(ex, 404, "text/plain", "not found");
-        }
-    }
-
-    private boolean serveSitemap(HttpExchange ex, String path) throws IOException {
-        String site = siteUrl();
-        switch (path) {
-            case "/robots.txt" -> respond(ex, 200, "text/plain",
-                    "User-agent: *\nDisallow: /private\n\nsitemap: " + site + "sitemap-index.xml\n");
-            case "/sitemap-index.xml" -> respond(ex, 200, "application/xml", """
+            case "map:/" -> html(ex, "<div id=\"posts\">filled in by JavaScript</div>");
+            case "map:/robots.txt" -> respond(ex, 200, "text/plain", """
+                    User-agent: *
+                    Disallow: /private
+                    Sitemap: %1$s/sitemap-index.xml
+                    sitemap:%2$s/not-this-site.xml
+                    """.formatted(map, ext));
+            case "map:/sitemap-index.xml" -> respond(ex, 200, "application/xml", """
                     <?xml version="1.0" encoding="UTF-8"?>
                     <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-                      <sitemap><loc>%1$ssitemap-pages.xml</loc></sitemap>
-                      <sitemap><loc>%1$ssitemap-index.xml</loc></sitemap>
+                      <sitemap><loc>%s/sitemap.xml</loc></sitemap>
                     </sitemapindex>
-                    """.formatted(site));
-            case "/sitemap-pages.xml" -> respond(ex, 200, "application/xml", """
+                    """.formatted(map));
+            case "map:/sitemap.xml" -> respond(ex, 200, "text/xml; charset=utf-8", """
                     <?xml version="1.0" encoding="UTF-8"?>
-                    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-                            xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
-                      <url><loc>%1$s</loc></url>
-                      <url>
-                        <loc> %1$sorphan </loc>
-                        <image:image><image:loc>%1$sorphan.png</image:loc></image:image>
-                      </url>
-                      <url><loc>%1$sgone-orphan</loc></url>
-                      <url><loc>%2$s/ext/from-sitemap</loc></url>
+                    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                      <url><loc>%1$s/p/post</loc><lastmod>2026-10-01</lastmod></url>
+                      <url><loc> %1$s/p/gone </loc></url>
+                      <url><loc>%2$s/ext/ok</loc></url>
                     </urlset>
-                    """.formatted(site, externalUrl("")));
-            case "/orphan" -> html(ex, "<a href=\"/orphan-child\">child</a>");
-            case "/orphan-child" -> html(ex, "only linked from /orphan");
-            default -> {
-                return false;
-            }
+                    """.formatted(map, ext));
+            case "map:/p/post" -> html(ex, "<a href=\"/p/linked\">another post</a>");
+            case "map:/p/linked" -> html(ex, "linked only from a post");
+            default -> respond(ex, 404, "text/plain", "not found");
         }
-        return true;
     }
 
     private static void html(HttpExchange ex, String body) throws IOException {

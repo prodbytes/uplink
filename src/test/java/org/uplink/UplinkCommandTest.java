@@ -3,7 +3,10 @@ package org.uplink;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+
 import org.junit.jupiter.api.Test;
+import org.uplink.report.ReportLog;
 
 import io.quarkus.test.junit.main.LaunchResult;
 import io.quarkus.test.junit.main.QuarkusMainLauncher;
@@ -20,14 +23,24 @@ class UplinkCommandTest {
             assertEquals(1, result.exitCode(), out);
             assertTrue(out.contains("uplink report for " + site.siteUrl()), out);
             assertTrue(out.contains("Pages crawled:     3"), out);
-            assertTrue(out.contains("Requests sent:     16"), out);
-            assertTrue(out.contains("| pages 3 | requests 16 |"), out);
+            // The crawl's 16 requests plus robots.txt, read for sitemaps (there is none).
+            assertTrue(out.contains("Requests sent:     17"), out);
+            assertTrue(out.contains("| pages 3 | requests 17 |"), out);
             assertTrue(out.contains("Good links:        8"), out);
             assertTrue(out.contains("Broken links:      4"), out);
             assertTrue(out.contains("Unverified links:  2"), out);
             assertTrue(out.contains("[404 Not Found] " + site.siteUrl() + "missing"), out);
             assertTrue(out.contains("found on " + site.siteUrl() + "b"), out);
             assertTrue(out.contains("BROKEN     [500 Internal Server Error]"), out);
+
+            String log = Files.readString(ReportLog.DEFAULT);
+            assertTrue(log.startsWith("\nuplink report for " + site.siteUrl()), log);
+            assertTrue(log.contains("[404 Not Found] " + site.siteUrl() + "missing"), log);
+            assertTrue(!log.contains("progress:") && !log.contains("done:"), "only the final report: " + log);
+            // Bad links to other sites are counted, not listed.
+            assertTrue(!log.contains("/ext/gone") && !log.contains("/local-only"), log);
+            assertTrue(log.contains("Broken links (4):"), log);
+            assertTrue(log.contains("  1 external link (not listed)"), log);
         }
     }
 

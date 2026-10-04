@@ -36,8 +36,12 @@ public final class ConsoleReporter implements CrawlListener {
         }
     }
 
-    /** Runs the crawl to completion, printing periodic summaries and the final report. */
-    public void run(Crawler crawler, String environmentReason) throws InterruptedException {
+    /**
+     * Runs the crawl to completion, printing periodic summaries and the final report.
+     *
+     * @return the final report
+     */
+    public String run(Crawler crawler, String environmentReason) throws InterruptedException {
         log("uplink: checking " + crawler.root() + " (CI mode: " + environmentReason + ")");
         if (crawler.sites().size() > 1) {
             log("uplink: also crawling " + crawler.sites().subList(1, crawler.sites().size()));
@@ -53,8 +57,10 @@ public final class ConsoleReporter implements CrawlListener {
             ticker.shutdownNow();
         }
         log("done: " + Report.progressLine(crawler.stats()));
-        out.print(Report.totals(crawler.root(), crawler.stats(), crawler.results(), crawler.isCancelled()));
+        String report = Report.totals(crawler.root(), crawler.stats(), crawler.results(), crawler.isCancelled());
+        out.print(report);
         out.flush();
+        return report;
     }
 
     private void log(String message) {
