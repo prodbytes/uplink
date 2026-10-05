@@ -3,19 +3,19 @@
 #
 #   scripts/install.sh                      # installs into ~/.local/bin
 #   PREFIX=/opt/homebrew/bin scripts/install.sh
-#   SKIP_BUILD=1 scripts/install.sh         # reuse an existing target/uplink
+#   SKIP_BUILD=1 scripts/install.sh         # reuse an existing uplink/target/uplink
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prefix="${PREFIX:-$HOME/.local/bin}"
-binary="$repo_root/target/uplink"
+binary="$repo_root/uplink/target/uplink"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   "$repo_root/make.sh" build -q
 fi
 
 if [[ ! -x "$binary" ]]; then
-  echo "install: $binary not found; build it with ./mvnw package -Dnative" >&2
+  echo "install: $binary not found; build it with ./make.sh build" >&2
   exit 1
 fi
 

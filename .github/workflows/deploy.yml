@@ -1,0 +1,83 @@
+# Deploys a *GA tag of uplink in the browser to production,
+# https://uplink.nu01.com, through scripts/deploy.sh (stack uplink-web). It
+# ends by checking that the live site serves this tag's version.
+#
+# AWS access is keyless: GitHub's OIDC token is exchanged for the
+# uplink-github-deploy role (infra/github-deploy.yaml), which only trusts
+# *GA tag runs of this repository and may only manage the uplink-web stack
+# and the uplink.nu01.com records. Its ARN is the repository variable
+# AWS_DEPLOY_ROLE_ARN.
+#
+# The Release GA workflow runs on the same tags and publishes the CLI
+# binaries.
+name: Deploy
+
+on:
+  push:
+    tags:
+      - "*GA"
+
+permissions:
+  contents: read
+  id-token: write
+
+# One production deploy at a time; a newer tag waits for the running one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  # Oracle GraalVM, for Web Image (GraalVM CE doesn't ship it), and binaryen's
+  # wasm-as, which Web Image runs. Both checked against their sha256.
+  GRAALVM_URL: https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25.0.4_linux-x64_bin.tar.gz
+  GRAALVM_SHA256: 76007c309f821aaf435bce63162ea0395587fc77350801c81643fe7feea37276
+  BINARYEN_URL: https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+  BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No `environment:` here: it would change the OIDC subject from the tag
+    # (repo:...:ref:refs/tags/X.Y.Z-GA), which the deploy role trusts, to the
+    # environment name.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Oracle GraalVM and binaryen
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/graalvm.tar.gz" "$GRAALVM_URL"
+          echo "$GRAALVM_SHA256  $RUNNER_TEMP/graalvm.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/graalvm"
+          tar -xzf "$RUNNER_TEMP/graalvm.tar.gz" -C "$RUNNER_TEMP/graalvm" --strip-components=1
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/binaryen.tar.gz" "$BINARYEN_URL"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/binaryen.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/binaryen"
+          tar -xzf "$RUNNER_TEMP/binaryen.tar.gz" -C "$RUNNER_TEMP/binaryen" --strip-components=1
+          {
+            echo "JAVA_HOME=$RUNNER_TEMP/graalvm"
+            echo "GRAALVM_HOME=$RUNNER_TEMP/graalvm"
+          } >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/graalvm/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/binaryen/bin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          java -version
+          native-image --version
+          wasm-as --version
+          node --version
+          aws --version
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: uplink-deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy ${{ github.ref_name }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/deploy.sh

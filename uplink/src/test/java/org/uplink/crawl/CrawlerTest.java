@@ -158,6 +158,58 @@ class CrawlerTest {
     }
 
     @Test
+    void aStartUrlThatRedirectsToAnotherSiteCrawlsThatSite() throws Exception {
+        try (TestSite site = new TestSite()) {
+            // Like nu01.com -> prodbytes.substack.com: the start URL is a doorway.
+            Crawler crawler = new Crawler(URI.create(site.externalUrl("/moved")), Crawler.Options.defaults(), new CrawlListener() {
+            });
+            crawler.run();
+            Map<String, LinkResult> byPath = crawler.results().stream()
+                    .collect(Collectors.toMap(r -> (r.internal() ? "" : "ext:") + r.url().getPath(), Function.identity()));
+            assertOutcome(byPath, "/moved", LinkResult.Outcome.OK, 200);
+            // The target's sitemaps are read, and the posts they list are crawled.
+            assertOutcome(byPath, "/p/post", LinkResult.Outcome.OK, 200);
+            assertOutcome(byPath, "/p/linked", LinkResult.Outcome.OK, 200);
+            assertTrue(byPath.get("/p/post").internal());
+            assertEquals(URI.create(site.sitemapSiteUrl("/")), crawler.sites().getLast());
+        }
+    }
+
+    @Test
+    void maxDepthStopsCrawlingTheSiteButStillChecksTheLinksReached() throws Exception {
+        try (TestSite site = new TestSite()) {
+            // / (0) -> /a (1) -> /b (2) -> /forbidden (3)
+            var options = new Crawler.Options(4, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT,
+                    true, false, 1, 0);
+            Crawler crawler = new Crawler(URI.create(site.siteUrl()), options, new CrawlListener() {
+            });
+            crawler.run();
+            Map<String, LinkResult> byPath = crawler.results().stream()
+                    .collect(Collectors.toMap(r -> (r.internal() ? "" : "ext:") + r.url().getPath(), Function.identity()));
+            assertOutcome(byPath, "/b", LinkResult.Outcome.OK, 200);
+            assertTrue(!byPath.containsKey("/forbidden"), "links on a page past the depth limit are not followed");
+            assertEquals(2, crawler.stats().pages(), "/ and /a are crawled, /b only checked");
+        }
+    }
+
+    @Test
+    void maxExternalDepthCrawlsOtherSitesThatFar() throws Exception {
+        try (TestSite site = new TestSite()) {
+            var options = new Crawler.Options(4, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT,
+                    true, false, Crawler.Options.UNLIMITED, 1);
+            Crawler crawler = new Crawler(URI.create(site.siteUrl()), options, new CrawlListener() {
+            });
+            crawler.run();
+            LinkResult deep = crawler.results().stream()
+                    .filter(r -> r.url().getPath().equals("/ext/deep")).findFirst().orElseThrow();
+            assertTrue(!deep.internal(), "pages reached on another site stay external");
+            assertEquals(URI.create(site.externalUrl("/ext/page")), deep.referrer());
+            // It 404s: HEAD, then the GET fallback.
+            assertEquals(2, site.hits("/ext/deep"), "an external page's links are checked, one level deep");
+        }
+    }
+
+    @Test
     void sitemapsCanBeIgnored() throws Exception {
         try (TestSite site = new TestSite()) {
             var options = new Crawler.Options(4, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT, true, false);

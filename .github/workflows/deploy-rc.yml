@@ -1,0 +1,113 @@
+# Deploys a release candidate of uplink in the browser to
+# https://rc.uplink.nu01.com: every pushed tag matching *RC* (e.g.
+# 0.1.202610051200-RC, from scripts/release-rc.sh), or a manual run. It runs
+# scripts/deploy.sh with STAGE=rc, which uses the RC's own stack
+# (uplink-rc-web), and ends by checking that the RC site serves this version.
+#
+# AWS access is keyless: GitHub's OIDC token is exchanged for the
+# uplink-github-deploy-rc role (infra/github-deploy.yaml). That role trusts
+# only *RC* tag runs and manual runs from main, and may only manage the
+# uplink-rc-web stack and the rc.uplink.nu01.com records. Its ARN is the
+# repository variable AWS_DEPLOY_RC_ROLE_ARN.
+#
+# The Release RC workflow runs on the same tags and publishes the CLI
+# binaries as a prerelease.
+name: Deploy RC
+
+on:
+  push:
+    tags:
+      - "*RC*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to deploy (e.g. 0.1.202610051200-RC). Empty deploys the selected branch's commit.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+# One RC deploy at a time; a newer one waits for the running one.
+concurrency:
+  group: deploy-rc
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  # Oracle GraalVM, for Web Image (GraalVM CE doesn't ship it), and binaryen's
+  # wasm-as, which Web Image runs. Both checked against their sha256.
+  GRAALVM_URL: https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25.0.4_linux-x64_bin.tar.gz
+  GRAALVM_SHA256: 76007c309f821aaf435bce63162ea0395587fc77350801c81643fe7feea37276
+  BINARYEN_URL: https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+  BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No `environment:` here: it would change the OIDC subject, which the
+    # RC role matches (the tag, or refs/heads/main for manual runs).
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ -n "$INPUT_TAG" ]]; then
+            tag="$INPUT_TAG"
+          elif [[ "$REF_TYPE" == tag ]]; then
+            tag="$REF_NAME"
+          else
+            tag=""
+          fi
+          if [[ -n "$tag" && ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Invalid tag '$tag'"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Deploying ${tag:-the current commit} to rc.uplink.nu01.com"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Install Oracle GraalVM and binaryen
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/graalvm.tar.gz" "$GRAALVM_URL"
+          echo "$GRAALVM_SHA256  $RUNNER_TEMP/graalvm.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/graalvm"
+          tar -xzf "$RUNNER_TEMP/graalvm.tar.gz" -C "$RUNNER_TEMP/graalvm" --strip-components=1
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/binaryen.tar.gz" "$BINARYEN_URL"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/binaryen.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/binaryen"
+          tar -xzf "$RUNNER_TEMP/binaryen.tar.gz" -C "$RUNNER_TEMP/binaryen" --strip-components=1
+          {
+            echo "JAVA_HOME=$RUNNER_TEMP/graalvm"
+            echo "GRAALVM_HOME=$RUNNER_TEMP/graalvm"
+          } >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/graalvm/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/binaryen/bin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          java -version
+          native-image --version
+          wasm-as --version
+          node --version
+          aws --version
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_RC_ROLE_ARN }}
+          role-session-name: uplink-deploy-rc-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy ${{ steps.tag.outputs.tag || github.sha }} to RC
+        env:
+          STAGE: rc
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/deploy.sh
