@@ -103,6 +103,9 @@ public final class AsyncCrawler {
     /** Detail of a link that answered but whose status could not be read. */
     public static final String STATUS_HIDDEN = "reachable, status hidden (no CORS)";
 
+    /** Most pages remembered per link; the rest are only counted. */
+    public static final int MAX_FOUND_ON = 50;
+
     private static final Check HIDDEN = new Check(0, LinkResult.Outcome.OK, STATUS_HIDDEN, List.of());
 
     /** The check a response that was not {@link Kind#RECEIVED} amounts to. */
@@ -127,6 +130,10 @@ public final class AsyncCrawler {
     private final CrawlStats stats = new CrawlStats();
     private final Set<URI> seen = new HashSet<>();
     private final List<LinkResult> results = new ArrayList<>();
+    /** Pages each link was found on, in the order found, up to {@link #MAX_FOUND_ON} each. */
+    private final Map<URI, List<URI>> foundOn = new HashMap<>();
+    /** Pages each link was found on, all counted. */
+    private final Map<URI, Integer> foundOnCount = new HashMap<>();
     /** Requests waiting for a permit, per host key, in the order hosts first had to wait. */
     private final Map<String, ArrayDeque<Job>> waiting = new LinkedHashMap<>();
     private final Map<String, Integer> activePerHost = new HashMap<>();
@@ -171,6 +178,20 @@ public final class AsyncCrawler {
     /** Snapshot of every result so far. */
     public List<LinkResult> results() {
         return new ArrayList<>(results);
+    }
+
+    /**
+     * The pages {@code url} was found on, in the order found: every one, where
+     * {@link LinkResult#referrer()} is only the first. At most {@link #MAX_FOUND_ON};
+     * {@link #foundOnCount(URI)} counts them all. Empty for a start URL no page links to.
+     */
+    public List<URI> foundOn(URI url) {
+        return List.copyOf(foundOn.getOrDefault(url, List.of()));
+    }
+
+    /** How many pages {@code url} was found on. */
+    public int foundOnCount(URI url) {
+        return foundOnCount.getOrDefault(url, 0);
     }
 
     /**
@@ -242,7 +263,17 @@ public final class AsyncCrawler {
     }
 
     private void submit(URI url, URI referrer, Depth depth) {
-        if (cancelled || !seen.add(url)) {
+        if (cancelled) {
+            return;
+        }
+        if (referrer != null) {
+            // Each page's links are a set, so a page is counted once per link.
+            int n = foundOnCount.merge(url, 1, Integer::sum);
+            if (n <= MAX_FOUND_ON) {
+                foundOn.computeIfAbsent(url, k -> new ArrayList<>()).add(referrer);
+            }
+        }
+        if (!seen.add(url)) {
             return;
         }
         stats.discovered.incrementAndGet();

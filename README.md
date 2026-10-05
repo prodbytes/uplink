@@ -4,13 +4,13 @@ A broken-link checker for websites, built with [Quarkus](https://quarkus.io)
 4.0.0.Beta1 and [TamboUI](https://tamboui.dev), compiled to a native executable.
 
 ```bash
-uplink https://aletyx.ai
+uplink https://nu01.com
 ```
 
 Or run the latest release without installing anything:
 
 ```bash
-curl -fsSL https://sh.uplink.nu01.com | sh -s -- https://aletyx.ai
+curl -fsSL https://sh.uplink.nu01.com | sh -s -- https://nu01.com
 curl -fsSL https://sh.uplink.nu01.com | sh -s -- ./public --mode=console
 ```
 
@@ -84,7 +84,7 @@ checked. The extra sites can be URLs or bare hosts (`https` is assumed), and
 the first one is where the crawl starts:
 
 ```bash
-uplink "https://aletyx.ai,docs.aletyx.ai;https://blog.aletyx.ai"
+uplink "https://nu01.com,docs.nu01.com;https://blog.nu01.com"
 ```
 
 Quote the argument when it contains `;`, which the shell would otherwise treat
@@ -177,7 +177,7 @@ is broken. The report goes to the job summary.
 ```yaml
 - uses: prodbytes/uplink@main
   with:
-    url: https://aletyx.ai
+    url: https://nu01.com
     args: --max-pages=500        # optional, more uplink options
     # version: 0.1.202610042105-GA   # optional, a release tag to run
     # summary: false                 # optional, skip the job summary
@@ -190,7 +190,7 @@ The step's `exit-code` output is `0`, `1` or `2`, as above; add
 runs on Linux (x64, arm64) and macOS (Apple Silicon) runners.
 
 [Check links](.github/workflows/check-links.yml) is a sample: it checks
-aletyx.ai every Monday and on demand (**Run workflow** takes another URL).
+nu01.com every Monday and on demand (**Run workflow** takes another URL).
 Some sites block GitHub's runners: Substack's Cloudflare, for one, answers
 them with 403 whatever the User-Agent. The start page then shows up as
 unverified and nothing is crawled, so check that a site lets runners in, or
