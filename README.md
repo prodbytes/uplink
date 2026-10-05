@@ -49,8 +49,8 @@ Finished in 3.1s - 456 unique links checked
 
 The site is two CloudFormation stacks in us-east-1, both deployed by
 [scripts/deploy-sh.sh](scripts/deploy-sh.sh):
-[infra/zone.yaml](infra/zone.yaml) (the `uplink.nu01.com` hosted zone,
-delegated from `nu01.com`) and [infra/sh.yaml](infra/sh.yaml) (ACM
+[infra/zone.cform.yaml](infra/zone.cform.yaml) (the `uplink.nu01.com` hosted zone,
+delegated from `nu01.com`) and [infra/sh.cform.yaml](infra/sh.cform.yaml) (ACM
 certificate, private S3 bucket, CloudFront with HTTPS only, and Route 53
 aliases). The deploy script then uploads the script, invalidates the cache
 and smoke-tests the live URL.

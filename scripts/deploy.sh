@@ -3,8 +3,13 @@
 # https://uplink.nu01.com, or with STAGE=rc to the release-candidate site,
 # https://rc.uplink.nu01.com (its own stack, uplink-rc-web):
 #   1. builds the site (./make.sh web -> uplink-web/target/web/) for this version
-#   2. deploys the site stack (infra/site.yaml: certificate, bucket,
-#      CloudFront, DNS in the uplink-zone stack's zone)
+#   2. deploys, as prodbytes/dsp's gitops does, one stack per piece, each
+#      importing the previous one's exports (all prefixed with the tenant,
+#      uplink or uplink-rc):
+#        <tenant>-acm-cert  infra/acm-cert.cform.yaml: the certificate, in the
+#                           uplink-zone stack's zone (infra/zone.cform.yaml)
+#        <tenant>-web       infra/site.cform.yaml: the bucket, CloudFront with
+#                           origin access control, and the alias records
 #   3. uploads the site and invalidates the CloudFront cache
 #   4. smoke-tests the live site: / must carry this version, and the
 #      WebAssembly module and its loader must be served (the module as
@@ -28,11 +33,13 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
 STAGE="${STAGE:-prod}"
 case "$STAGE" in
-  prod) STACK=uplink-web DOMAIN=uplink.nu01.com ;;
-  rc) STACK=uplink-rc-web DOMAIN=rc.uplink.nu01.com ;;
+  prod) TENANT_ID=uplink DOMAIN=uplink.nu01.com ;;
+  rc) TENANT_ID=uplink-rc DOMAIN=rc.uplink.nu01.com ;;
   *) echo "error: STAGE must be prod or rc (got '$STAGE')" >&2; exit 2 ;;
 esac
 ZONE_STACK=uplink-zone
+CERT_STACK=$TENANT_ID-acm-cert
+SITE_STACK=$TENANT_ID-web
 WEB=uplink-web/target/web
 
 if [[ "${TAG:-}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-.*)?$ ]]; then
@@ -49,9 +56,17 @@ if [[ -n "${tag_xy:-}" && "$tag_xy" != "$VERSION_X.$VERSION_Y" ]]; then
 fi
 echo "==> deploying uplink-web $VERSION to https://$DOMAIN/ ($STAGE, $AWS_REGION)"
 
+deploy() { # deploy <stack> <template> <parameter overrides...>
+  local stack="$1" template="$2"
+  shift 2
+  echo "==> deploying $stack"
+  aws cloudformation deploy --stack-name "$stack" --template-file "$template" \
+    --no-fail-on-empty-changeset --parameter-overrides "$@"
+}
+
 stack_output() { # stack_output <stack> <output key>
   aws cloudformation describe-stacks --stack-name "$1" \
-    --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text
+    --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue | [0]" --output text
 }
 
 # The version index.html was built with, from <meta name="uplink-version" content="...">.
@@ -73,14 +88,14 @@ if [[ "$built" != "$VERSION" ]]; then
   exit 1
 fi
 
-# 2. The stack. The certificate's DNS validation can take a few minutes on a first deploy.
-echo "==> deploying $STACK"
-aws cloudformation deploy --stack-name "$STACK" \
-  --template-file infra/site.yaml \
-  --parameter-overrides "DomainName=$DOMAIN" "ZoneStackName=$ZONE_STACK" \
-  --no-fail-on-empty-changeset
-bucket="$(stack_output "$STACK" SiteBucketName)"
-distribution="$(stack_output "$STACK" DistributionId)"
+# 2. The stacks. A new certificate's DNS validation takes a few minutes.
+deploy "$CERT_STACK" infra/acm-cert.cform.yaml \
+  "TenantId=$TENANT_ID" "DomainName=$DOMAIN" "ZoneStackName=$ZONE_STACK"
+echo "    certificate: $(stack_output "$CERT_STACK" CertificateArn)"
+deploy "$SITE_STACK" infra/site.cform.yaml \
+  "TenantId=$TENANT_ID" "ZoneStackName=$ZONE_STACK"
+bucket="$(stack_output "$SITE_STACK" SiteBucketName)"
+distribution="$(stack_output "$SITE_STACK" DistributionId)"
 echo "    bucket: $bucket, distribution: $distribution"
 
 # 3. The content. No file name is content-hashed, so browsers revalidate

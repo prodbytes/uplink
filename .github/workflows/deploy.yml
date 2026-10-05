@@ -3,7 +3,7 @@
 # ends by checking that the live site serves this tag's version.
 #
 # AWS access is keyless: GitHub's OIDC token is exchanged for the
-# uplink-github-deploy role (infra/github-deploy.yaml), which only trusts
+# uplink-github-deploy role (infra/github-deploy.cform.yaml), which only trusts
 # *GA tag runs of this repository and may only manage the uplink-web stack
 # and the uplink.nu01.com records. Its ARN is the repository variable
 # AWS_DEPLOY_ROLE_ARN.

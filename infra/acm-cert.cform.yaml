@@ -1,0 +1,55 @@
+# aws cloudformation deploy --region us-east-1 --stack-name uplink-acm-cert --template-file infra/acm-cert.cform.yaml --parameter-overrides TenantId=uplink DomainName=uplink.nu01.com
+# aws cloudformation delete-stack --region us-east-1 --stack-name uplink-acm-cert
+#
+# As prodbytes/dsp's acm-cert: MUST be deployed in us-east-1, where CloudFront
+# takes its certificates from and where the zone stack's exports live.
+# Deployed by scripts/deploy.sh (uplink-acm-cert for production,
+# uplink-rc-acm-cert for the release candidate).
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  DNS-validated ACM certificate for one of uplink's sites, in the zone
+  exported by the uplink-zone stack (infra/zone.cform.yaml). The site stack
+  of the same TenantId (infra/site.cform.yaml) imports it.
+
+Parameters:
+  TenantId:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9-]*$"
+    Description: Prefix for export names and the TenantId tag (uplink, uplink-rc)
+  DomainName:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
+    Description: Name the certificate covers, in the zone (uplink.nu01.com, rc.uplink.nu01.com)
+  ZoneStackName:
+    Type: String
+    Default: uplink-zone
+    Description: The stack of infra/zone.cform.yaml, whose zone holds DomainName
+
+Resources:
+  # Naming the zone lets CloudFormation write the validation CNAME itself;
+  # stack creation blocks until validation succeeds.
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId:
+            Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+      Tags:
+        - Key: TenantId
+          Value: !Ref TenantId
+
+Outputs:
+  CertificateArn:
+    Description: ACM certificate ARN
+    Value: !Ref Certificate
+    Export:
+      Name: !Sub ${TenantId}-CertificateArn
+  CertificateDomainName:
+    Description: Name the certificate covers
+    Value: !Ref DomainName
+    Export:
+      Name: !Sub ${TenantId}-CertificateDomainName

@@ -6,7 +6,7 @@
 #   curl -fsSL https://sh.uplink.nu01.com | sh -s -- ./public --mode=console
 #   curl -fsSL https://sh.uplink.nu01.com | sh -s -- --help
 #
-# (https://sh.uplink.nu01.com serves this file at every path: infra/sh.yaml,
+# (https://sh.uplink.nu01.com serves this file at every path: infra/sh.cform.yaml,
 # deployed by scripts/deploy-sh.sh.)
 #
 # The URL argument may also be a local directory, e.g. a static site's build
