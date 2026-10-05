@@ -116,6 +116,25 @@ class AsyncCrawlerTest {
     }
 
     @Test
+    void remembersEveryPageALinkWasFoundOn() {
+        var transport = new FakeTransport();
+        transport.page("https://site.test/", "<a href='/a'>a</a> <a href='/b'>b</a> <a href='/gone'>x</a>");
+        transport.page("https://site.test/a", "<a href='/gone'>x</a> <a href='/gone'>again</a>");
+        transport.page("https://site.test/b", "<a href='/gone'>x</a>");
+
+        var crawler = new AsyncCrawler(List.of(URI.create("https://site.test/")), OPTIONS, new CrawlListener() {
+        }, transport);
+        crawler.start(() -> { });
+        transport.drain();
+
+        URI gone = URI.create("https://site.test/gone");
+        assertEquals(3, crawler.foundOnCount(gone), "once per page, however often the page links to it");
+        assertEquals(List.of("https://site.test/", "https://site.test/a", "https://site.test/b"),
+                crawler.foundOn(gone).stream().map(URI::toString).toList());
+        assertEquals(0, crawler.foundOnCount(URI.create("https://site.test/")), "no page links to the start URL");
+    }
+
+    @Test
     void crawlsFromEverySeedInOnePass() {
         var transport = new FakeTransport();
         transport.page("https://one.test/", "<a href='/a'>a</a>");

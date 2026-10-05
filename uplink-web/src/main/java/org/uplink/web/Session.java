@@ -2,6 +2,8 @@ package org.uplink.web;
 
 import java.net.URI;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -11,6 +13,7 @@ import org.uplink.crawl.CrawlListener;
 import org.uplink.crawl.Crawler;
 import org.uplink.crawl.LinkResult;
 import org.uplink.report.Monitor;
+import org.uplink.report.PassReport;
 import org.uplink.report.Report;
 
 /**
@@ -21,6 +24,8 @@ import org.uplink.report.Report;
  * browser console, with a warning for each page whose links cannot be read.
  */
 final class Session {
+
+    private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final List<URI> sites;
     private final Crawler.Options options;
@@ -95,6 +100,7 @@ final class Session {
         if (!crawler.isCancelled()) {
             monitor.passFinished(number, crawler.results(), crawler.stats());
             lastCompleted = crawler;
+            publishReport(crawler, number);
             long unreadable = crawler.results().stream()
                     .filter(r -> r.internal() && AsyncCrawler.STATUS_HIDDEN.equals(r.detail()))
                     .count();
@@ -106,6 +112,25 @@ final class Session {
         flushLog();
         nextPassAtNanos = System.nanoTime() + interval.toNanos();
         transport.schedule(interval.toMillis(), this::runPass);
+    }
+
+    /** Hands app.js the text report of a completed pass, for the Reports tab. */
+    private void publishReport(AsyncCrawler crawler, int number) {
+        LocalDateTime now = LocalDateTime.now();
+        String text = PassReport.text(number, sites, crawler.stats(), crawler.results(),
+                url -> new PassReport.FoundOn(crawler.foundOn(url), crawler.foundOnCount(url)),
+                monitor.slowThreshold(), now);
+        Monitor.PassSummary summary = monitor.lastPass();
+        Browser.passReport(new Json().object()
+                .put("pass", number)
+                .put("finishedAt", now.format(WHEN))
+                .put("sites", String.join(", ", sites.stream().map(URI::toString).toList()))
+                .put("good", summary.stats().ok())
+                .put("broken", summary.stats().broken())
+                .put("unverified", summary.stats().blocked())
+                .put("slow", summary.slow())
+                .put("text", text)
+                .end().toString());
     }
 
     /** Stops after the current request; the report of the last completed pass is kept, as the TUI prints it. */

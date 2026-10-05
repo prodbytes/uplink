@@ -121,6 +121,11 @@ final class Browser {
     @JS(args = {"json"}, value = "if (typeof globalThis.uplinkRender === 'function') globalThis.uplinkRender(json);")
     static native void render(String json);
 
+    /** Hands the report of a completed pass, as JSON, to {@code uplinkPassReport} in app.js. */
+    @JS.Coerce
+    @JS(args = {"json"}, value = "if (typeof globalThis.uplinkPassReport === 'function') globalThis.uplinkPassReport(json);")
+    static native void passReport(String json);
+
     /**
      * Publishes {@code uplinkStart(params)} and {@code uplinkStop()} for app.js, then
      * tells it they are there.
