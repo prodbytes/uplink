@@ -2,6 +2,7 @@ package org.uplink.web;
 
 import java.net.URI;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -24,6 +25,8 @@ final class View {
     private static final int MAX_ROWS = 2000;
     /** Most recent events sent. */
     private static final int MAX_EVENTS = 300;
+    /** Unreadable pages named in the notice; the console lists them all. */
+    private static final int MAX_HIDDEN_EXAMPLES = 8;
 
     private View() {
     }
@@ -45,6 +48,7 @@ final class View {
                 .put("running", !session.stopped())
                 .put("error", error)
                 .put("root", session.root().toString())
+                .put("siteCount", session.sites().size())
                 .put("pass", session.pass())
                 .put("phase", session.stopped() ? "stopped" : crawling ? "crawling" : "waiting")
                 .put("state", state(session))
@@ -101,16 +105,24 @@ final class View {
         // Links answered without CORS: reachable, but their status (and pages' links) are unreadable.
         AsyncCrawler counted = crawling || session.lastCompleted() == null ? crawler : session.lastCompleted();
         long hidden = 0;
-        long hiddenPages = 0;
+        List<String> hiddenPages = new ArrayList<>();
         if (counted != null) {
             for (LinkResult r : counted.results()) {
                 if (AsyncCrawler.STATUS_HIDDEN.equals(r.detail())) {
                     hidden++;
-                    hiddenPages += r.internal() ? 1 : 0;
+                    if (r.internal()) {
+                        hiddenPages.add(r.url().toString());
+                    }
                 }
             }
         }
-        json.put("hidden", hidden).put("hiddenPages", hiddenPages);
+        hiddenPages.sort(null);
+        json.put("hidden", hidden).put("hiddenPages", hiddenPages.size());
+        json.array("hiddenExamples");
+        for (String url : hiddenPages.subList(0, Math.min(hiddenPages.size(), MAX_HIDDEN_EXAMPLES))) {
+            json.object().put("url", url).end();
+        }
+        json.endArray();
 
         List<LinkResult> bad = monitor.badLinks();
         Map<String, Integer> byCode = new TreeMap<>();
@@ -163,7 +175,7 @@ final class View {
         for (LinkResult r : pages.subList(0, Math.min(pages.size(), MAX_ROWS))) {
             json.object()
                     .put("millis", r.elapsed().toMillis())
-                    .put("status", r.statusLabel())
+                    .put("status", statusLabel(r))
                     .put("bad", r.isBad())
                     .put("url", r.url().toString())
                     .end();
@@ -190,6 +202,12 @@ final class View {
         }
         json.endArray();
 
+        json.array("sites");
+        for (URI site : session.sites()) {
+            json.object().put("url", site.toString()).end();
+        }
+        json.endArray();
+
         json.put("report", session.stopped() ? session.finalReport() : null);
         return json.end().toString();
     }
@@ -204,6 +222,11 @@ final class View {
             return "pass #" + session.pass() + " done, next pass in " + seconds + "s";
         }
         return "pass #" + session.pass() + " running";
+    }
+
+    /** The status column: like the TUI's, but "—" for a link that answered with its status hidden, not "ERR". */
+    private static String statusLabel(LinkResult r) {
+        return AsyncCrawler.STATUS_HIDDEN.equals(r.detail()) ? "—" : r.statusLabel();
     }
 
     /** Nearest-rank percentile of latencies sorted slowest first, as in the TUI. */

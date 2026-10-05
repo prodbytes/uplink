@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tags the current commit with the current version and a release kind, and
 # pushes the tag, which starts the matching release workflow
-# (.github/workflows/release-rc.yml or release-ga.yml). Used by
+# (.github/workflows/release-rc.yml or release-ga.yml: the CLI binaries) and
+# deploy workflow (deploy-rc.yml to https://rc.uplink.nu01.com, or deploy.yml
+# to https://uplink.nu01.com: uplink in the browser). Used by
 # scripts/release-rc.sh and scripts/release-ga.sh:
 # `bash scripts/tag-release.sh RC|GA`.
 #
@@ -47,5 +49,13 @@ fi
 workflow="release-$(tr '[:upper:]' '[:lower:]' <<<"$kind").yml"
 git tag --annotate "$tag" --message "uplink $tag"
 git push --quiet origin "refs/tags/$tag"
+repo_url="$(git remote get-url origin | sed -e 's#^git@github.com:#https://github.com/#' -e 's#\.git$##')"
+if [[ "$kind" == GA ]]; then
+  deploy=deploy.yml site=https://uplink.nu01.com/
+else
+  deploy=deploy-rc.yml site=https://rc.uplink.nu01.com/
+fi
 echo "Pushed $tag. The $workflow workflow publishes it as uplink-$tag:"
-echo "  $(git remote get-url origin | sed -e 's#^git@github.com:#https://github.com/#' -e 's#\.git$##')/actions/workflows/$workflow"
+echo "  $repo_url/actions/workflows/$workflow"
+echo "and $deploy deploys uplink in the browser to $site:"
+echo "  $repo_url/actions/workflows/$deploy"

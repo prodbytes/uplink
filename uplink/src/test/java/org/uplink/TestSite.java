@@ -132,6 +132,11 @@ public final class TestSite implements AutoCloseable {
             }
             case "/forbidden" -> respond(ex, 403, "text/plain", "no robots");
             case "/server-error" -> respond(ex, 500, "text/plain", "boom");
+            // A doorway, like nu01.com: the start URL redirects to the site with the posts.
+            case "ext:/moved" -> {
+                ex.getResponseHeaders().add("Location", map + "/");
+                respond(ex, 301, "text/plain", "");
+            }
             case "ext:/ext/ok" -> html(ex, "fine");
             case "ext:/ext/page" -> html(ex, "<a href=\"/ext/deep\">must not be crawled</a>");
             case "ext:/ext/no-head" -> {

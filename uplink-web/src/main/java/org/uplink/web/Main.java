@@ -47,6 +47,7 @@ public final class Main {
             guard(p -> {
                 // Nothing changes on the page once stopped, until the next start.
                 if (session != null && !session.stopped()) {
+                    session.flushLog();
                     render();
                 }
             }, "");
@@ -60,16 +61,21 @@ public final class Main {
 
     /**
      * Starts checking, replacing any running session. {@code params} is the form as a
-     * query string: {@code sites}, {@code concurrency}, {@code maxInFlight},
-     * {@code timeout}, {@code maxPages}, {@code interval}, {@code slow} and {@code sitemaps}.
+     * query string: {@code sites} (the address list, separated by {@code ,}),
+     * {@code concurrency}, {@code maxInFlight}, {@code timeout}, {@code maxPages},
+     * {@code maxDepth}, {@code maxExternalDepth}, {@code interval}, {@code slow} and
+     * {@code sitemaps}. Each pass crawls from every
+     * address, in sorted order.
      */
     static void start(String params) {
         stop();
         error = null;
         Map<String, String> form = parse(params);
-        Optional<List<URI>> sites = Links.parseSites(form.getOrDefault("sites", "").trim());
+        Optional<List<URI>> sites = Links.parseSites(form.getOrDefault("sites", "").trim())
+                .map(list -> list.stream().map(URI::toString).sorted().distinct().map(URI::create).toList());
         if (sites.isEmpty()) {
             error = "Enter an http(s) URL, optionally followed by more sites separated by , or ;";
+            Browser.log("warn", "not started: not an http(s) URL: " + form.getOrDefault("sites", ""));
             session = null;
             render();
             return;
@@ -81,15 +87,27 @@ public final class Main {
             int maxPages = positive(form, "maxPages", 10_000);
             int slow = positive(form, "slow", 1000);
             int interval = number(form, "interval", 30);
+            int maxDepth = number(form, "maxDepth", Crawler.Options.UNLIMITED);
+            int maxExternalDepth = number(form, "maxExternalDepth", 0);
+            if (maxDepth < 0 || maxExternalDepth < 0) {
+                throw new IllegalArgumentException("depth limits must not be negative");
+            }
             if (interval < 0) {
                 throw new IllegalArgumentException("interval must not be negative");
             }
             boolean sitemaps = form.containsKey("sitemaps");
             // The browser follows redirects and sets its own User-Agent.
             Crawler.Options options = new Crawler.Options(concurrency, maxInFlight, Duration.ofSeconds(timeout),
-                    maxPages, Crawler.Options.DEFAULT_USER_AGENT, true, sitemaps);
+                    maxPages, Crawler.Options.DEFAULT_USER_AGENT, true, sitemaps, maxDepth, maxExternalDepth);
             session = new Session(sites.get(), options, Duration.ofSeconds(interval), Duration.ofMillis(slow));
+            Browser.log("info", "checking " + sites.get() + ": " + concurrency + " requests per host, " + maxInFlight
+                    + " in flight, " + timeout + "s timeout, up to " + maxPages + " pages, sitemaps "
+                    + (sitemaps ? "on" : "off") + ", depth " + (maxDepth == Crawler.Options.UNLIMITED ? "unlimited" : maxDepth)
+                    + " on the sites and " + maxExternalDepth + " off them, " + interval + "s between passes, slow from "
+                    + slow + "ms."
+                    + " Every request is logged at debug level (Verbose in Chrome's console).");
         } catch (IllegalArgumentException e) {
+            Browser.log("warn", "not started: " + e.getMessage());
             error = e.getMessage();
             session = null;
             render();
@@ -148,7 +166,7 @@ public final class Main {
         try {
             action.accept(value);
         } catch (Throwable t) {
-            Browser.logError("uplink: " + t);
+            Browser.log("error", "internal error: " + t);
             error = "Internal error: " + t;
         }
     }

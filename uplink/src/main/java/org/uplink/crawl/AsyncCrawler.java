@@ -25,6 +25,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.parser.Parser;
 import org.uplink.crawl.CheckRules.Check;
+import org.uplink.crawl.CheckRules.Depth;
 
 /**
  * The same crawl as {@link Crawler}, for a single-threaded event loop such as a
@@ -145,9 +146,9 @@ public final class AsyncCrawler {
         if (sites.isEmpty()) {
             throw new IllegalArgumentException("No start URL");
         }
-        this.sites = sites.stream()
+        this.sites = new ArrayList<>(sites.stream()
                 .map(site -> Links.normalize(site).orElseThrow(() -> new IllegalArgumentException("Not an http(s) URL: " + site)))
-                .toList();
+                .toList());
         this.root = this.sites.getFirst();
         this.options = options;
         this.listener = listener;
@@ -158,8 +159,9 @@ public final class AsyncCrawler {
         return root;
     }
 
+    /** The crawled sites, including any a start URL redirected to. */
     public List<URI> sites() {
-        return sites;
+        return List.copyOf(sites);
     }
 
     public CrawlStats stats() {
@@ -172,10 +174,20 @@ public final class AsyncCrawler {
     }
 
     /**
-     * Starts crawling and returns at once; {@code onDone} runs when every reachable link
-     * has been checked, or when {@link #cancel()} is called.
+     * Starts crawling from the start URL and returns at once; {@code onDone} runs when
+     * every reachable link has been checked, or when {@link #cancel()} is called.
      */
     public void start(Runnable onDone) {
+        start(List.of(root), onDone);
+    }
+
+    /**
+     * Like {@link #start(Runnable)}, but crawls from each of {@code seeds}, so sites that
+     * do not link to each other are all crawled in one pass.
+     *
+     * @param seeds URLs to start from, usually {@link #sites()}
+     */
+    public void start(List<URI> seeds, Runnable onDone) {
         if (started) {
             throw new IllegalStateException("Already started");
         }
@@ -183,9 +195,11 @@ public final class AsyncCrawler {
         this.onDone = onDone;
         // Held while seeding, so the crawl cannot finish before the sitemaps are queued.
         pending++;
-        submit(root, null);
+        for (URI seed : seeds) {
+            Links.normalize(seed).ifPresent(url -> submit(url, null, Depth.START));
+        }
         if (options.sitemaps()) {
-            for (URI site : sites) {
+            for (URI site : List.copyOf(sites)) {
                 discoverSitemaps(site);
             }
         }
@@ -227,13 +241,14 @@ public final class AsyncCrawler {
         }
     }
 
-    private void submit(URI url, URI referrer) {
+    private void submit(URI url, URI referrer, Depth depth) {
         if (cancelled || !seen.add(url)) {
             return;
         }
         stats.discovered.incrementAndGet();
         pending++;
         boolean internal = Links.inSites(sites, url);
+        boolean crawled = depth.crawled(options);
         withPermit(url, internal, release -> {
             stats.inFlight.incrementAndGet();
             listener.onCheckStarted(url, internal);
@@ -248,15 +263,18 @@ public final class AsyncCrawler {
                     stats.record(result);
                     listener.onResult(result);
                     for (URI child : check.links()) {
-                        submit(child, url);
+                        boolean childInternal = Links.inSites(sites, child);
+                        submit(child, url, check.listed() ? depth.listed(childInternal) : depth.child(childInternal));
                     }
                 }
                 taskDone();
             };
             if (internal) {
-                fetchPage(url, done);
+                fetchPage(url, true, crawled, referrer == null, done);
             } else if (Links.isLocal(url)) {
                 done.accept(Check.LOCAL);
+            } else if (crawled) {
+                fetchPage(url, false, true, false, done);
             } else {
                 checkExternal(url, done);
             }
@@ -275,7 +293,7 @@ public final class AsyncCrawler {
             release.run();
             if (!cancelled && response.kind() == Kind.RECEIVED && response.status() == 200) {
                 for (URI sitemap : CheckRules.sitemapUrls(truncate(response.body(), MAX_ROBOTS_BYTES), sites)) {
-                    submit(sitemap, robots);
+                    submit(sitemap, robots, Depth.START);
                 }
             }
             taskDone();
@@ -350,21 +368,26 @@ public final class AsyncCrawler {
     // ---- checks -------------------------------------------------------------
 
     /**
-     * GETs an internal URL and, when it is an HTML page on a crawled site, extracts its
-     * links; when it is an XML sitemap, the URLs it lists.
+     * As {@link Crawler}'s: GETs a URL and, when {@code parse} and it is an HTML page,
+     * extracts its links; when it is an XML sitemap on a crawled site, the URLs it lists. A
+     * start URL that redirects to another site makes that site a crawled one.
      */
-    private void fetchPage(URI url, Consumer<Check> done) {
-        sendWithRetry(new Request(url, "GET", true), response -> {
+    private void fetchPage(URI url, boolean internal, boolean parse, boolean start, Consumer<Check> done) {
+        sendWithRetry(new Request(url, "GET", parse), response -> {
             if (response.kind() != Kind.RECEIVED) {
                 done.accept(unreceived(response));
                 return;
             }
             Check check = Check.of(response.status());
             URI finalUri = response.finalUri();
+            if (start && check.outcome() == LinkResult.Outcome.OK) {
+                adoptRedirectTarget(finalUri);
+            }
             boolean html = isHtml(response.contentType());
-            boolean followable = check.outcome() == LinkResult.Outcome.OK
-                    && (html || isXml(response.contentType()))
-                    && Links.inSites(sites, finalUri)
+            boolean followable = parse
+                    && check.outcome() == LinkResult.Outcome.OK
+                    && (html || (internal && isXml(response.contentType())))
+                    && (!internal || Links.inSites(sites, finalUri))
                     && notYetSeenRedirectTarget(url, finalUri)
                     && stats.pages() < options.maxPages();
             if (!followable) {
@@ -380,7 +403,7 @@ public final class AsyncCrawler {
                     parsed = check.withLinks(new ArrayList<>(Links.extract(doc)));
                 } else {
                     Document xml = Jsoup.parse(body, finalUri.toString(), Parser.xmlParser());
-                    parsed = check.withLinks(new ArrayList<>(Links.extractSitemap(xml)));
+                    parsed = check.withListedLinks(new ArrayList<>(Links.extractSitemap(xml)));
                 }
             } catch (RuntimeException e) {
                 // The status is known; a page that cannot be parsed only has no links to follow.
@@ -388,6 +411,17 @@ public final class AsyncCrawler {
             }
             done.accept(parsed);
         });
+    }
+
+    /** As in {@link Crawler}: a start URL's redirect to another site makes it a crawled site. */
+    private void adoptRedirectTarget(URI finalUri) {
+        Optional<URI> site = CheckRules.siteOf(finalUri);
+        if (site.isPresent() && !Links.inSites(sites, finalUri)) {
+            sites.add(site.get());
+            if (options.sitemaps()) {
+                discoverSitemaps(site.get());
+            }
+        }
     }
 
     /** As in {@link Crawler}: a redirect to an already crawled page is not parsed twice. */

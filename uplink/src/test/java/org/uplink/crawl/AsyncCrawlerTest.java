@@ -116,6 +116,66 @@ class AsyncCrawlerTest {
     }
 
     @Test
+    void crawlsFromEverySeedInOnePass() {
+        var transport = new FakeTransport();
+        transport.page("https://one.test/", "<a href='/a'>a</a>");
+        transport.page("https://one.test/a", "leaf");
+        transport.page("https://two.test/", "<a href='/b'>b</a> <a href='https://one.test/a'>shared</a>");
+        transport.page("https://two.test/b", "leaf");
+        var sites = List.of(URI.create("https://one.test/"), URI.create("https://two.test/"));
+
+        var crawler = new AsyncCrawler(sites, OPTIONS, new CrawlListener() {
+        }, transport);
+        crawler.start(sites, () -> { });
+        transport.drain();
+
+        List<String> urls = crawler.results().stream().map(r -> r.url().toString()).sorted().toList();
+        assertEquals(List.of("https://one.test/", "https://one.test/a", "https://two.test/", "https://two.test/b"), urls,
+                "both sites are crawled, though neither links to the other's start page; shared links are checked once");
+        assertEquals(4, crawler.stats().pages());
+    }
+
+    @Test
+    void depthLimitsApplyOnAndOffTheCrawledSites() {
+        var transport = new FakeTransport();
+        transport.page("https://site.test/", "<a href='/a'>a</a> <a href='https://other.test/x'>x</a>");
+        transport.page("https://site.test/a", "<a href='/b'>b</a>");
+        transport.page("https://site.test/b", "<a href='/c'>c</a>");
+        transport.page("https://other.test/x", "<a href='https://other.test/y'>y</a>");
+        transport.page("https://other.test/y", "<a href='https://other.test/z'>z</a>");
+        var options = new Crawler.Options(2, 16, Duration.ofSeconds(5), 100, Crawler.Options.DEFAULT_USER_AGENT,
+                true, false, 1, 1);
+
+        var crawler = new AsyncCrawler(List.of(URI.create("https://site.test/")), options, new CrawlListener() {
+        }, transport);
+        crawler.start(() -> { });
+        transport.drain();
+
+        List<String> urls = crawler.results().stream().map(r -> r.url().toString()).sorted().toList();
+        assertEquals(List.of("https://other.test/x", "https://other.test/y", "https://site.test/",
+                "https://site.test/a", "https://site.test/b"), urls,
+                "/b is past the site's depth 1 and other.test/y past the external depth 1: both checked, not crawled");
+    }
+
+    @Test
+    void aStartUrlThatRedirectsToAnotherSiteCrawlsThatSite() {
+        var transport = new FakeTransport();
+        transport.routes.put("https://doorway.test/", r -> AsyncCrawler.Response.received(200,
+                URI.create("https://blog.test/"), "text/html", "<a href='/p/1'>post</a>", 2, Optional.empty()));
+        transport.page("https://blog.test/p/1", "a post");
+
+        var crawler = new AsyncCrawler(List.of(URI.create("https://doorway.test/")), OPTIONS, new CrawlListener() {
+        }, transport);
+        crawler.start(() -> { });
+        transport.drain();
+
+        LinkResult post = crawler.results().stream()
+                .filter(r -> r.url().toString().equals("https://blog.test/p/1")).findFirst().orElseThrow();
+        assertTrue(post.internal(), "the redirect target is a crawled site");
+        assertTrue(transport.sent.contains("GET https://blog.test/robots.txt"), "its sitemaps are read");
+    }
+
+    @Test
     void sitemapsFromRobotsTxtSeedTheCrawl() {
         var transport = new FakeTransport();
         transport.page("https://site.test/", "no links");

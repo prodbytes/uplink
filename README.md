@@ -140,13 +140,26 @@ Override the detection with `--mode=tui` or `--mode=console`.
 
 ```
 uplink [-hV] [--[no-]follow-redirects] [-c=<per-host>] [--max-in-flight=<n>]
-       [--max-pages=<n>] [--mode=auto|tui|console] [--interval=<seconds>]
-       [--slow=<ms>] [--summary-interval=<seconds>] [-t=<seconds>]
-       URL[,SITE...]
+       [--max-pages=<n>] [--max-depth=<n>] [--max-external-depth=<n>]
+       [--mode=auto|tui|console] [--interval=<seconds>] [--slow=<ms>]
+       [--summary-interval=<seconds>] [-t=<seconds>] URL[,SITE...]
 ```
 
 Redirects are followed by default (except from HTTPS to HTTP), and the link
-gets the status of where it leads. With `--no-follow-redirects`, or
+gets the status of where it leads. When the start URL redirects to another
+site, that site is crawled too, with its sitemaps. `uplink https://nu01.com`,
+which redirects to `prodbytes.substack.com`, crawls every post on that
+Substack blog.
+
+Two limits set how far the crawl goes, counted in links followed:
+
+- `--max-depth`: on the crawled sites, how far from the start URL (or from a
+  page a sitemap lists) a page can be and still be crawled for links. The
+  default is no limit. Pages one link further are still checked.
+- `--max-external-depth`: how far off the crawled sites a page can be and still
+  be crawled for links. The default `0` checks links to other sites without
+  crawling them. `1` also checks the links on the pages they lead to, and so
+  on. Pages reached that way stay external: they are counted, not listed. With `--no-follow-redirects`, or
 `UPLINK_FOLLOW_REDIRECTS=false` in the environment, a 3xx counts as good and
 its target is not checked. The flag overrides the environment variable, which
 accepts `true` or `false`.
@@ -223,7 +236,18 @@ each with a `SHA256SUMS` file. A release is started by pushing a tag:
 
 Both workflows call [Build](.github/workflows/build.yml), which runs the
 tests, builds each platform natively, checks that the binary reports the tag's
-version and publishes the release. A GA release must be a commit on `main`;
+version and publishes the release. The same tags deploy
+[uplink in the browser](#uplink-in-the-browser) with
+[scripts/deploy.sh](scripts/deploy.sh):
+
+- [Deploy RC](.github/workflows/deploy-rc.yml) deploys an RC to
+  https://rc.uplink.nu01.com.
+- [Deploy](.github/workflows/deploy.yml) deploys a GA to
+  https://uplink.nu01.com.
+
+Each deploy ends by checking that the live site serves the tag's version. They
+reach AWS through GitHub's OIDC with roles that can touch only their own site
+(see [infra/README.md](infra/README.md)). A GA release must be a commit on `main`;
 an RC can be any pushed commit. `DRY_RUN=1` prints the tag without creating
 it. Bump `version.X.txt` or `version.Y.txt` for a new major or minor version.
 
@@ -237,11 +261,13 @@ Quarkus native images do not register service providers automatically.
 
 [uplink-web/](uplink-web/) runs link checks in a browser tab, with the same
 Summary, Broken and Latency views as the dashboard (keys `1`–`3`, `←`/`→`,
-`↑`/`↓`, `PgUp`/`PgDn`, `Home`, `End`). Enter a URL (more sites can follow
-after `,` or `;`, as on the command line) and press **Start**. It checks the
-sites again and again, `Seconds between passes` apart, until you press **Stop**,
-which shows the final report and lets you download it. `?url=` in the page's
-address fills in the URL.
+`↑`/`↓`, `PgUp`/`PgDn`, `Home`, `End`). Enter an address and press **Start**.
+Each address you start on joins the address list under the field, sorted and
+without duplicates. The list is kept in the browser, and `×` removes an
+address. Every pass crawls from all the addresses in the list, so sites that do
+not link to each other are checked together. Passes repeat, `Seconds between
+passes` apart, until you press **Stop**, which shows the final report and lets
+you download it. `?url=` in the page's address fills in the field.
 
 There is no server. The `uplink` library (crawler, link rules, monitor and
 report) is compiled to WebAssembly with
@@ -251,12 +277,14 @@ is the crawler for this: it does the same crawl as `Crawler`, but on one event
 loop with callbacks instead of virtual threads.
 
 ```bash
-GRAALVM_HOME=/path/to/oracle-graalvm-25.3 make web   # -> uplink-web/target/web/
-make web-serve                                        # http://127.0.0.1:8000/
+make web         # -> uplink-web/target/web/
+make web-serve   # http://127.0.0.1:8000/
 ```
 
 `make web` needs Oracle GraalVM 25.3 or later, because GraalVM CE does not
-include Web Image (`lib/svm/tools/svm-wasm`). It also needs binaryen's
+include Web Image (`lib/svm/tools/svm-wasm`). It uses `GRAALVM_HOME` or
+`JAVA_HOME` when either has it, or else the newest such JDK installed with
+SDKMAN! or in `/Library/Java`. It also needs binaryen's
 `wasm-as`, which devbox installs. The output in `uplink-web/target/web/` is a
 static site of about 9 MB (`index.html`, `app.js`, `style.css`,
 `uplink-web.js` and its `.wasm`). Host it anywhere that serves files over
@@ -271,8 +299,14 @@ The browser's security rules apply, so results can differ from the CLI's:
   and the page says so.
 - Links to other sites usually answer without CORS headers. The browser then
   hides the status: a link that answers counts as good ("status hidden"), so a
-  404 on another site can go unnoticed. A link that cannot be reached at all
-  is broken.
+  404 on another site can go unnoticed. A link with no answer the browser lets
+  through is unverified, not broken. JavaScript cannot tell an unreachable
+  server from one that refuses cross-origin requests
+  (`Cross-Origin-Resource-Policy`), but the browser console's network errors
+  can.
+- Every request and each unreadable page is logged to the browser console with
+  an `[uplink]` prefix. The per-request lines are at debug level ("Verbose" in
+  Chrome).
 - On an `https://` page the browser blocks `http://` links (mixed content).
   They are reported as unverified.
 - The browser follows redirects and sends its own User-Agent.
@@ -296,7 +330,7 @@ Toolchain pinned by [devbox.json](devbox.json) and locked in [devbox.lock](devbo
 | GraalVM CE | 25.0.2 |
 | Node.js | 26.x |
 | Python | 3.14.x |
-| PostgreSQL | 17.x |
+| binaryen | for uplink-web's WebAssembly build |
 
 The container also ships the
 [docker-in-docker feature](https://github.com/devcontainers/features/tree/main/src/docker-in-docker),
@@ -325,14 +359,16 @@ devbox add go@1.24  # add more tools (updates devbox.json + devbox.lock)
 devbox services up
 ```
 
-starts PostgreSQL as a Docker container (`devbox-db`, defined in
-[compose.yaml](compose.yaml)) plus a `health-check` monitor wired up in
-[process-compose.yaml](process-compose.yaml). A readiness probe holds the
-monitor back until the database accepts connections; after that it logs one
-status line per check (every 15 s, configurable via `HEALTH_CHECK_INTERVAL`):
+starts [uplink in the browser](#uplink-in-the-browser) on
+http://127.0.0.1:8000/ (`WEB_PORT` to change it) and a `health-check` monitor,
+both wired up in [process-compose.yaml](process-compose.yaml). The web service
+([scripts/web-service.sh](scripts/web-service.sh)) builds uplink-web first when
+there is no build or the sources changed, which takes a minute and needs Oracle
+GraalVM (see above). The monitor logs one status line per check (every 15 s,
+configurable via `HEALTH_CHECK_INTERVAL`):
 
 ```
-2026-07-09 20:02:10 🐘 database ✅
+2026-07-09 20:02:10 🌐 uplink-web ✅
 ```
 
 Stop everything with `devbox services stop`. The monitor also runs standalone:

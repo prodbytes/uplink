@@ -40,10 +40,19 @@ final class CheckRules {
     private CheckRules() {
     }
 
-    record Check(int status, LinkResult.Outcome outcome, String detail, List<URI> links) {
+    /**
+     * @param links  the links found on the page
+     * @param listed whether {@code links} come from a sitemap, which lists pages rather
+     *               than linking to them: they stay at the sitemap's depth
+     */
+    record Check(int status, LinkResult.Outcome outcome, String detail, List<URI> links, boolean listed) {
 
         /** A link to localhost outside the crawled sites: visitors cannot open it, and it is never requested. */
-        static final Check LOCAL = new Check(0, LinkResult.Outcome.BLOCKED, "links to localhost", List.of());
+        static final Check LOCAL = new Check(0, LinkResult.Outcome.BLOCKED, "links to localhost", List.of(), false);
+
+        Check(int status, LinkResult.Outcome outcome, String detail, List<URI> links) {
+            this(status, outcome, detail, links, false);
+        }
 
         static Check of(int status) {
             LinkResult.Outcome outcome = status < 400 ? LinkResult.Outcome.OK
@@ -57,8 +66,48 @@ final class CheckRules {
         }
 
         Check withLinks(List<URI> links) {
-            return new Check(status, outcome, detail, links);
+            return new Check(status, outcome, detail, links, false);
         }
+
+        Check withListedLinks(List<URI> links) {
+            return new Check(status, outcome, detail, links, true);
+        }
+    }
+
+    /**
+     * Where a link sits in the crawl.
+     *
+     * @param hops    links followed from a start URL (a start URL, or a page a sitemap lists, is 0)
+     * @param offsite consecutive links followed off the crawled sites to get here: 0 for a
+     *                page on them, 1 for a page they link to on another site, and so on
+     */
+    record Depth(int hops, int offsite) {
+
+        static final Depth START = new Depth(0, 0);
+
+        /** A link on this page. */
+        Depth child(boolean internal) {
+            return new Depth(hops + 1, internal ? 0 : offsite + 1);
+        }
+
+        /** A page a sitemap at this depth lists. */
+        Depth listed(boolean internal) {
+            return new Depth(hops, internal ? 0 : offsite + 1);
+        }
+
+        /**
+         * Whether a page here is parsed for links: on the crawled sites up to
+         * {@link Crawler.Options#maxDepth()} links from a start URL, elsewhere up to
+         * {@link Crawler.Options#maxExternalDepth()} links off them.
+         */
+        boolean crawled(Crawler.Options options) {
+            return offsite == 0 ? hops <= options.maxDepth() : offsite <= options.maxExternalDepth();
+        }
+    }
+
+    /** The site root ({@code scheme://host[:port]/}) of {@code url}. */
+    static Optional<URI> siteOf(URI url) {
+        return Links.normalize(url.resolve("/"));
     }
 
     static String describe(int status) {

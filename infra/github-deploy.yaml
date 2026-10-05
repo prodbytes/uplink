@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  uplink-github-deploy: lets GitHub Actions deploy uplink in the browser
+  (infra/site.yaml, by scripts/deploy.sh). A production role that only *GA
+  tag runs can assume, limited to the uplink-web stack and the
+  uplink.nu01.com records; and a release-candidate role for *RC* tag runs
+  and manual runs from main, limited to the uplink-rc-web stack and the
+  rc.uplink.nu01.com records. Deployed once, by hand (see infra/README.md).
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: prodbytes/uplink
+    Description: owner/name of the repository whose tag runs may deploy
+  GitHubImmutableRepository:
+    Type: String
+    Default: prodbytes@288014477/uplink@1404673480
+    Description: >
+      The same repository in GitHub's immutable subject form,
+      owner@<owner id>/name@<repository id>. The repository uses immutable
+      OIDC subject claims (gh api repos/<owner>/<name>/actions/oidc/customization/sub
+      shows use_immutable_subject and the sub_claim_prefix), so tokens say
+      repo:<this>:ref:... rather than repo:owner/name:ref:...
+  ZoneStackName:
+    Type: String
+    Default: uplink-zone
+    Description: The stack of infra/zone.yaml, whose zone holds the site records
+  ProdDomainName:
+    Type: String
+    Default: uplink.nu01.com
+  RcDomainName:
+    Type: String
+    Default: rc.uplink.nu01.com
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: true only when the account has no GitHub OIDC provider yet (presence-github-deploy created it)
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: uplink-github-deploy
+      Description: Assumed by GitHub Actions on *GA tags to deploy uplink in the browser (uplink.nu01.com)
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Only tag pushes whose name ends in GA (X.Y.Z-GA), in either
+                # subject form (immutable IDs, or owner/name).
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubImmutableRepository}:ref:refs/tags/*GA
+                  - !Sub repo:${GitHubRepository}:ref:refs/tags/*GA
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:*
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-web/*
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStacks
+                  - cloudformation:ListExports
+                Resource: '*'
+              # The site bucket, named after the stack (uplink-web-sitebucket-...)
+              - Effect: Allow
+                Action: s3:*
+                Resource:
+                  - arn:aws:s3:::uplink-web-*
+                  - arn:aws:s3:::uplink-web-*/*
+              - Effect: Allow
+                Action: cloudfront:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - acm:RequestCertificate
+                  - acm:DescribeCertificate
+                  - acm:DeleteCertificate
+                  - acm:ListCertificates
+                  - acm:AddTagsToCertificate
+                  - acm:ListTagsForCertificate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - route53:ListResourceRecordSets
+                  - route53:GetHostedZone
+                Resource: !Sub
+                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
+                  - ZoneId:
+                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+              # Records may change only for the site and its ACM validation
+              # name (_<token>.uplink.nu01.com): never rc's or sh's.
+              - Effect: Allow
+                Action: route53:ChangeResourceRecordSets
+                Resource: !Sub
+                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
+                  - ZoneId:
+                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+                Condition:
+                  ForAllValues:StringLike:
+                    route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                      - !Ref ProdDomainName
+                      - !Sub _*.${ProdDomainName}
+              - Effect: Allow
+                Action:
+                  - route53:GetChange
+                  - route53:ListHostedZones
+                Resource: '*'
+
+  RcDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: uplink-github-deploy-rc
+      Description: Assumed by GitHub Actions on *RC* tags and manual runs from main, to deploy the uplink release candidate (rc.uplink.nu01.com)
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # *RC* tag pushes (X.Y.Z-RC1), and manual runs from main, in
+                # either subject form (immutable IDs, or owner/name).
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubImmutableRepository}:ref:refs/tags/*RC*
+                  - !Sub repo:${GitHubImmutableRepository}:ref:refs/heads/main
+                  - !Sub repo:${GitHubRepository}:ref:refs/tags/*RC*
+                  - !Sub repo:${GitHubRepository}:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:*
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-rc-web/*
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStacks
+                  - cloudformation:ListExports
+                Resource: '*'
+              # The site bucket, named after the stack (uplink-rc-web-sitebucket-...)
+              - Effect: Allow
+                Action: s3:*
+                Resource:
+                  - arn:aws:s3:::uplink-rc-web-*
+                  - arn:aws:s3:::uplink-rc-web-*/*
+              - Effect: Allow
+                Action: cloudfront:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - acm:RequestCertificate
+                  - acm:DescribeCertificate
+                  - acm:DeleteCertificate
+                  - acm:ListCertificates
+                  - acm:AddTagsToCertificate
+                  - acm:ListTagsForCertificate
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - route53:ListResourceRecordSets
+                  - route53:GetHostedZone
+                Resource: !Sub
+                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
+                  - ZoneId:
+                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+              # Records may change only for rc.uplink.nu01.com and its ACM
+              # validation name (_<token>.rc.uplink.nu01.com): never prod's.
+              - Effect: Allow
+                Action: route53:ChangeResourceRecordSets
+                Resource: !Sub
+                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
+                  - ZoneId:
+                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+                Condition:
+                  ForAllValues:StringLike:
+                    route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                      - !Ref RcDomainName
+                      - !Sub _*.${RcDomainName}
+              - Effect: Allow
+                Action:
+                  - route53:GetChange
+                  - route53:ListHostedZones
+                Resource: '*'
+
+Outputs:
+  DeployRoleArn:
+    Description: Set as the repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
+  RcDeployRoleArn:
+    Description: Set as the repository variable AWS_DEPLOY_RC_ROLE_ARN
+    Value: !GetAtt RcDeployRole.Arn

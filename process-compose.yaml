@@ -9,20 +9,22 @@ processes:
       restart: on_failure
       backoff_seconds: 5
 
-  1-postgresql:
-    command: docker compose up postgres
-    shutdown:
-      command: docker stop devbox-db
-      timeout_seconds: 30
+  # uplink in the browser, built on first start (Oracle GraalVM needed, see
+  # make.sh) and served as static files on http://127.0.0.1:${WEB_PORT:-8000}/.
+  1-uplink-web:
+    command: bash scripts/web-service.sh
+    environment:
+      - WEB_PORT=${WEB_PORT:-8000}
     readiness_probe:
       exec:
-        command: docker exec devbox-db pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}
-      initial_delay_seconds: 3
+        command: curl -fsS -o /dev/null http://127.0.0.1:${WEB_PORT:-8000}/
+      initial_delay_seconds: 2
       period_seconds: 3
       timeout_seconds: 5
-      failure_threshold: 20
+      # Up to ~5 minutes: the first start builds the WebAssembly module.
+      failure_threshold: 100
     availability:
       restart: on_failure
       backoff_seconds: 5
-
-
+      # A failed build (say, no Oracle GraalVM) is not retried forever.
+      max_restarts: 3

@@ -68,6 +68,17 @@ public class UplinkCommand implements Callable<Integer> {
     @Option(names = "--max-pages", defaultValue = "10000", description = "Most pages to crawl for links (default: ${DEFAULT-VALUE})")
     int maxPages;
 
+    @Option(names = "--max-depth", defaultValue = "-1", paramLabel = "<n>",
+            description = "Most links followed from the URL to a page on the crawled sites that is still crawled"
+                    + " for links; deeper pages are only checked (default: no limit)")
+    int maxDepth;
+
+    @Option(names = "--max-external-depth", defaultValue = "0", paramLabel = "<n>",
+            description = "Most links followed off the crawled sites to a page that is still crawled for links:"
+                    + " 0 checks other sites' pages without crawling them, 1 also checks the links on them,"
+                    + " and so on (default: ${DEFAULT-VALUE})")
+    int maxExternalDepth;
+
     @Option(names = "--summary-interval", defaultValue = "30",
             description = "Seconds between progress summaries in console mode (default: ${DEFAULT-VALUE})")
     int summaryIntervalSeconds;
@@ -104,7 +115,7 @@ public class UplinkCommand implements Callable<Integer> {
             return 2;
         }
         if (concurrency < 1 || maxInFlight < 1 || timeoutSeconds < 1 || maxPages < 1 || summaryIntervalSeconds < 1
-                || intervalSeconds < 0 || slowMillis < 1) {
+                || intervalSeconds < 0 || slowMillis < 1 || maxDepth < -1 || maxExternalDepth < 0) {
             System.err.println("uplink: numeric options must be positive");
             return 2;
         }
@@ -118,7 +129,8 @@ public class UplinkCommand implements Callable<Integer> {
         String reason = mode == Mode.auto ? env.reason() : "--mode=" + mode;
 
         Crawler.Options options = new Crawler.Options(concurrency, maxInFlight, Duration.ofSeconds(timeoutSeconds),
-                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects, sitemaps);
+                maxPages, Crawler.Options.DEFAULT_USER_AGENT, followRedirects, sitemaps,
+                maxDepth < 0 ? Crawler.Options.UNLIMITED : maxDepth, maxExternalDepth);
         ToolkitRunner terminal = null;
         if (tui) {
             try {

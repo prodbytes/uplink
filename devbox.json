@@ -5,10 +5,6 @@
     "python": "latest",
     "nodejs": "latest",
     "go": "latest",
-    "binaryen": "latest",
-    "postgresql": {
-      "version": "latest",
-      "disable_plugin": true
-    }
+    "binaryen": "latest"
   }
 }

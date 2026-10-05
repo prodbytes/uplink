@@ -12,7 +12,7 @@
 #   ./make.sh clean      # remove build output of both
 #
 # "web" needs Oracle GraalVM 25.3+, which ships Web Image (GraalVM CE does not):
-# set GRAALVM_HOME to it when JAVA_HOME points elsewhere (devbox's GraalVM is CE).
+# GRAALVM_HOME or JAVA_HOME, else the newest found in SDKMAN! or /Library/Java.
 # Set WEB_IMAGE_QUICK=1 for a faster, less optimized Wasm build.
 #
 # Extra arguments after the target are passed through to Maven, e.g.
@@ -33,13 +33,34 @@ usage() {
   sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# The browser version, built with GRAALVM_HOME's JDK when set.
+# A JDK with Web Image: GRAALVM_HOME, JAVA_HOME, or else the newest one installed
+# with SDKMAN! or in /Library/Java (devbox's JAVA_HOME is GraalVM CE, which lacks it).
+web_jdk() {
+  local candidate
+  for candidate in "${GRAALVM_HOME:-}" "${JAVA_HOME:-}"; do
+    if [[ -n "$candidate" && -d "$candidate/lib/svm/tools/svm-wasm" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
+  for candidate in $(ls -d "${SDKMAN_DIR:-$HOME/.sdkman}"/candidates/java/*/ \
+      /Library/Java/JavaVirtualMachines/*/Contents/Home/ 2>/dev/null | sort -rV); do
+    if [[ -d "$candidate/lib/svm/tools/svm-wasm" ]]; then
+      echo "${candidate%/}"
+      return
+    fi
+  done
+}
+
+# The browser version.
 web() {
-  if [[ -n "${GRAALVM_HOME:-}" ]]; then
-    JAVA_HOME="$GRAALVM_HOME" "${mvn[@]}" -Pweb package -pl uplink-web -am -DskipTests "$@"
-  else
-    "${mvn[@]}" -Pweb package -pl uplink-web -am -DskipTests "$@"
+  local jdk
+  jdk="$(web_jdk)"
+  if [[ -z "$jdk" ]]; then
+    echo "make.sh: no JDK with GraalVM Web Image found; install Oracle GraalVM 25.3+ and set GRAALVM_HOME" >&2
+    exit 1
   fi
+  JAVA_HOME="$jdk" "${mvn[@]}" -Pweb package -pl uplink-web -am -DskipTests "$@"
 }
 
 target="${1:-build}"

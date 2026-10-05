@@ -17,9 +17,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,6 +35,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.parser.Parser;
 import org.uplink.crawl.CheckRules.Check;
+import org.uplink.crawl.CheckRules.Depth;
 
 import static org.uplink.crawl.CheckRules.ERROR_RETRY_MILLIS;
 import static org.uplink.crawl.CheckRules.MAX_PAGE_BYTES;
@@ -55,12 +58,26 @@ public final class Crawler {
      * @param maxInFlight most concurrent requests overall
      * @param followRedirects whether redirects are followed (except HTTPS to HTTP); when not, a 3xx counts as OK
      * @param sitemaps    whether the sitemaps a site declares in its robots.txt seed the crawl
+     * @param maxDepth    most links followed from a start URL to a page on the crawled sites that is
+     *                    still parsed for links ({@link #UNLIMITED} by default); deeper pages are only checked
+     * @param maxExternalDepth most links followed off the crawled sites to a page that is still parsed for
+     *                    links: 0 (the default) checks other sites' pages without crawling them, 1 also
+     *                    checks the links on the pages they link to, and so on
      */
     public record Options(int perHost, int maxInFlight, Duration timeout, int maxPages, String userAgent,
-            boolean followRedirects, boolean sitemaps) {
+            boolean followRedirects, boolean sitemaps, int maxDepth, int maxExternalDepth) {
 
         public static final String DEFAULT_USER_AGENT =
                 "Mozilla/5.0 (compatible; uplink/1.0; link checker) AppleWebKit/537.36 (KHTML, like Gecko)";
+
+        /** No depth limit. */
+        public static final int UNLIMITED = Integer.MAX_VALUE;
+
+        /** No depth limit on the crawled sites, and other sites only checked. */
+        public Options(int perHost, int maxInFlight, Duration timeout, int maxPages, String userAgent,
+                boolean followRedirects, boolean sitemaps) {
+            this(perHost, maxInFlight, timeout, maxPages, userAgent, followRedirects, sitemaps, UNLIMITED, 0);
+        }
 
         public static Options defaults() {
             return new Options(8, 64, Duration.ofSeconds(20), 10_000, DEFAULT_USER_AGENT, true, true);
@@ -68,7 +85,10 @@ public final class Crawler {
     }
 
     private final URI root;
-    /** Sites whose pages are crawled: the root's first, then any others allowed. */
+    /**
+     * Sites whose pages are crawled: the root's first, then any others allowed, then any
+     * a start URL redirected to.
+     */
     private final List<URI> sites;
     private final Options options;
     private final CrawlListener listener;
@@ -100,9 +120,9 @@ public final class Crawler {
         if (sites.isEmpty()) {
             throw new IllegalArgumentException("No start URL");
         }
-        this.sites = sites.stream()
+        this.sites = new CopyOnWriteArrayList<>(sites.stream()
                 .map(site -> Links.normalize(site).orElseThrow(() -> new IllegalArgumentException("Not an http(s) URL: " + site)))
-                .toList();
+                .toList());
         this.root = this.sites.getFirst();
         this.options = options;
         this.listener = listener;
@@ -118,8 +138,9 @@ public final class Crawler {
         return root;
     }
 
+    /** The crawled sites, including any a start URL redirected to. */
     public List<URI> sites() {
-        return sites;
+        return List.copyOf(sites);
     }
 
     public CrawlStats stats() {
@@ -134,7 +155,7 @@ public final class Crawler {
     /** Crawls until every reachable link has been checked or {@link #cancel()} is called. */
     public void run() throws InterruptedException {
         try {
-            submit(root, null);
+            submit(root, null, Depth.START);
             if (options.sitemaps()) {
                 for (URI site : sites) {
                     discoverSitemaps(site);
@@ -159,7 +180,7 @@ public final class Crawler {
         return cancelled;
     }
 
-    private void submit(URI url, URI referrer) {
+    private void submit(URI url, URI referrer, Depth depth) {
         if (cancelled || !seen.add(url)) {
             return;
         }
@@ -168,7 +189,7 @@ public final class Crawler {
         try {
             executor.execute(() -> {
                 try {
-                    process(url, referrer);
+                    process(url, referrer, depth);
                 } finally {
                     taskDone();
                 }
@@ -191,7 +212,7 @@ public final class Crawler {
                 try {
                     URI robots = site.resolve("/robots.txt");
                     for (URI sitemap : withPermits(robots, true, () -> fetchSitemapUrls(robots))) {
-                        submit(sitemap, robots);
+                        submit(sitemap, robots, Depth.START);
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -250,12 +271,13 @@ public final class Crawler {
         }
     }
 
-    private void process(URI url, URI referrer) {
+    private void process(URI url, URI referrer, Depth depth) {
         if (cancelled) {
             return;
         }
         boolean internal = Links.inSites(sites, url);
-        record Checked(LinkResult result, List<URI> links) {
+        boolean crawled = depth.crawled(options);
+        record Checked(LinkResult result, List<URI> links, boolean listed) {
         }
         Checked checked;
         try {
@@ -264,12 +286,13 @@ public final class Crawler {
                 try {
                     listener.onCheckStarted(url, internal);
                     long start = System.nanoTime();
-                    Check check = internal ? fetchPage(url)
+                    Check check = internal ? fetchPage(url, true, crawled, referrer == null)
                             : Links.isLocal(url) ? Check.LOCAL
+                            : crawled ? fetchPage(url, false, true, false)
                             : checkExternal(url);
                     Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
                     return new Checked(new LinkResult(url, referrer, internal, check.status(), check.outcome(),
-                            check.detail(), elapsed), check.links());
+                            check.detail(), elapsed), check.links(), check.listed());
                 } finally {
                     stats.inFlight.decrementAndGet();
                 }
@@ -286,7 +309,8 @@ public final class Crawler {
         stats.record(result);
         listener.onResult(result);
         for (URI child : checked.links()) {
-            submit(child, url);
+            boolean childInternal = Links.inSites(sites, child);
+            submit(child, url, checked.listed() ? depth.listed(childInternal) : depth.child(childInternal));
         }
     }
 
@@ -296,10 +320,12 @@ public final class Crawler {
     }
 
     /**
-     * GETs an internal URL and, when it is an HTML page on this site, extracts its links;
-     * when it is an XML sitemap, the URLs it lists.
+     * GETs a URL and, when {@code parse} and it is an HTML page, extracts its links; when it
+     * is an XML sitemap on a crawled site, the URLs it lists. An internal page must end up on
+     * a crawled site to be parsed; a start URL that redirects to another site makes that site
+     * a crawled one (as nu01.com does to its Substack blog).
      */
-    private Check fetchPage(URI url) throws InterruptedException {
+    private Check fetchPage(URI url, boolean internal, boolean parse, boolean start) throws InterruptedException {
         HttpResponse<InputStream> response;
         try {
             response = sendWithRetry(request(url, "GET"), HttpResponse.BodyHandlers.ofInputStream());
@@ -308,12 +334,16 @@ public final class Crawler {
         }
         Check check = Check.of(response.statusCode());
         URI finalUri = response.uri();
+        if (start && check.outcome() == LinkResult.Outcome.OK) {
+            adoptRedirectTarget(finalUri);
+        }
         try (InputStream body = response.body()) {
             String contentType = response.headers().firstValue("Content-Type").orElse("");
             boolean html = isHtml(contentType);
-            boolean followable = check.outcome() == LinkResult.Outcome.OK
-                    && (html || isXml(contentType))
-                    && Links.inSites(sites, finalUri)
+            boolean followable = parse
+                    && check.outcome() == LinkResult.Outcome.OK
+                    && (html || (internal && isXml(contentType)))
+                    && (!internal || Links.inSites(sites, finalUri))
                     && notYetSeenRedirectTarget(url, finalUri)
                     && stats.pages() < options.maxPages();
             if (!followable) {
@@ -323,7 +353,7 @@ public final class Crawler {
             if (!html) {
                 Document xml = Jsoup.parse(new ByteArrayInputStream(bytes), charset(contentType),
                         finalUri.toString(), Parser.xmlParser());
-                return check.withLinks(new ArrayList<>(Links.extractSitemap(xml)));
+                return check.withListedLinks(new ArrayList<>(Links.extractSitemap(xml)));
             }
             stats.pages.incrementAndGet();
             Document doc = Jsoup.parse(new ByteArrayInputStream(bytes), charset(contentType), finalUri.toString());
@@ -332,6 +362,24 @@ public final class Crawler {
             // The status was already received; a failure while reading the body only
             // means this page's links cannot be followed.
             return check;
+        }
+    }
+
+    /**
+     * When a start URL redirects to another site, that site is crawled too, sitemaps
+     * included: the start URL is a doorway to it.
+     */
+    private void adoptRedirectTarget(URI finalUri) {
+        Optional<URI> site = CheckRules.siteOf(finalUri);
+        if (site.isEmpty() || Links.inSites(sites, finalUri)) {
+            return;
+        }
+        boolean added;
+        synchronized (sites) {
+            added = !Links.inSites(sites, finalUri) && sites.add(site.get());
+        }
+        if (added && options.sitemaps()) {
+            discoverSitemaps(site.get());
         }
     }
 

@@ -10,6 +10,59 @@
   const PAGE_ROWS = 10;
   const ui = { tab: 'summary', cursor: { broken: 0, latency: 0 }, state: null, ready: false };
 
+  // ---- address list: every address started on, sorted and unique, kept in this browser ----
+
+  const STORE = 'uplink.addresses';
+  let addresses = loadAddresses();
+
+  function loadAddresses() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE) || '[]');
+      return Array.isArray(saved) ? saved.filter((a) => typeof a === 'string' && /^https?:\/\//.test(a)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveAddresses() {
+    try {
+      localStorage.setItem(STORE, JSON.stringify(addresses));
+    } catch {
+      // Private windows may refuse storage; the list then lasts until the page closes.
+    }
+  }
+
+  /** An http(s) address as uplink normalizes it (lowercase host, no default port or fragment), or null. */
+  function normalizeAddress(raw) {
+    try {
+      const url = new URL(raw.includes('://') ? raw : 'https://' + raw);
+      if (!/^https?:$/.test(url.protocol) || !url.hostname) return null;
+      url.hash = '';
+      return url.href;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Adds each address in {@code text} (separated by , ; or spaces); returns the ones that are not http(s) URLs. */
+  function addAddresses(text) {
+    const rejected = [];
+    for (const part of text.split(/[,;\s]+/).filter(Boolean)) {
+      const address = normalizeAddress(part);
+      if (address) addresses.push(address);
+      else rejected.push(part);
+    }
+    addresses = [...new Set(addresses)].sort();
+    saveAddresses();
+    renderAddresses();
+    return rejected;
+  }
+
+  function renderAddresses() {
+    $('addresses').innerHTML = addresses.map((a) => `<li>${link(a)}
+      <button type="button" class="remove" data-address="${esc(a)}" aria-label="Remove ${esc(a)}">×</button></li>`).join('');
+  }
+
   const version = document.querySelector('meta[name="uplink-version"]').content;
   $('version').textContent = version.startsWith('$') || version === 'dev' ? 'dev' : 'v' + version;
 
@@ -46,7 +99,8 @@
       return;
     }
     const phaseTone = s.phase === 'crawling' ? 'warn' : s.phase === 'waiting' ? 'ok' : 'dim';
-    $('target-line').innerHTML = span('Target  ', 'dim') + link(s.root, 'target')
+    const more = s.siteCount > 1 ? span(` +${s.siteCount - 1} more`, 'accent') : '';
+    $('target-line').innerHTML = span(s.siteCount > 1 ? 'Targets ' : 'Target  ', 'dim') + link(s.root, 'target') + more
       + span(`   pass #${s.pass}`, 'strong') + span(`   ${s.phase}`, phaseTone);
 
     const n = s.now;
@@ -175,10 +229,14 @@
   function renderNotice(s) {
     const notice = $('cors-notice');
     if (s.hiddenPages) {
-      notice.textContent = `${s.hiddenPages} page${s.hiddenPages === 1 ? '' : 's'} on the crawled site answered without `
-        + `CORS headers, so the browser would not let uplink read ${s.hiddenPages === 1 ? 'its' : 'their'} links. `
-        + 'Only pages on sites that allow '
-        + 'cross-origin reads can be crawled from a browser; the uplink CLI has no such limit.';
+      const one = s.hiddenPages === 1;
+      const shown = s.hiddenExamples.map((p) => `<li>${link(p.url)}</li>`).join('');
+      const rest = s.hiddenPages - s.hiddenExamples.length;
+      notice.innerHTML = `${s.hiddenPages} page${one ? '' : 's'} on the crawled site answered without CORS headers `
+        + `(no <code>Access-Control-Allow-Origin</code>), so the browser would not let uplink read `
+        + `${one ? 'it' : 'them'}: ${one ? 'its' : 'their'} links were not crawled. `
+        + 'To crawl them from a browser, the site must send that header on them; the uplink CLI has no such limit.'
+        + `<ul>${shown}${rest > 0 ? `<li class="dim">… ${rest} more, listed in the browser console</li>` : ''}</ul>`;
       notice.hidden = false;
     } else if (s.hidden) {
       notice.textContent = `${s.hidden} link${s.hidden === 1 ? '' : 's'} to other sites answered, but without CORS `
@@ -202,13 +260,13 @@
   function render() {
     const s = ui.state;
     if (!s) return;
-    $('message').textContent = s.error || '';
-    $('message').classList.toggle('bad', Boolean(s.error));
+    if (s.error) showMessage(s.error, 'bad');
+    else if ($('message').classList.contains('bad') && s.running) showMessage('');
     $('start').textContent = s.running ? 'Restart' : 'Start';
     $('start').disabled = !ui.ready;
     $('stop').disabled = !s.running;
     $('state').textContent = s.state || 'idle';
-    document.title = s.root ? `uplink ${s.root}` : 'uplink web';
+    document.title = s.root ? `uplink ${s.root}${s.siteCount > 1 ? ` +${s.siteCount - 1}` : ''}` : 'uplink web';
     renderTabs(s);
     renderHeader(s);
     if (!s.root) {
@@ -268,16 +326,48 @@
 
   // ---- input -----------------------------------------------------------------
 
+  /** Checks every address in the list, restarting a running check. */
   function start() {
     if (!ui.ready) return;
-    const params = new URLSearchParams(new FormData($('start-form'))).toString();
+    const form = new FormData($('start-form'));
+    form.set('sites', addresses.join(','));
     ui.cursor = { broken: 0, latency: 0 };
-    globalThis.uplinkStart(params);
+    globalThis.uplinkStart(new URLSearchParams(form).toString());
+  }
+
+  function showMessage(text, tone) {
+    $('message').textContent = text;
+    $('message').className = 'message ' + (tone || '');
   }
 
   $('start-form').addEventListener('submit', (e) => {
     e.preventDefault();
+    const rejected = addAddresses($('sites').value);
+    if (rejected.length) {
+      // The valid addresses are already in the list; leave only the ones to fix.
+      $('sites').value = rejected.join(' ');
+      showMessage(`Not an http(s) address: ${rejected.join(', ')}`, 'bad');
+      return;
+    }
+    if (!addresses.length) {
+      showMessage('Add an address to check, such as https://example.com', 'bad');
+      return;
+    }
+    $('sites').value = '';
     start();
+  });
+
+  // Removing an address restarts a running check without it; an empty list stops it.
+  $('addresses').addEventListener('click', (e) => {
+    const button = e.target.closest('button.remove');
+    if (!button) return;
+    addresses = addresses.filter((a) => a !== button.dataset.address);
+    saveAddresses();
+    renderAddresses();
+    if (ui.state && ui.state.running) {
+      if (addresses.length) start();
+      else globalThis.uplinkStop();
+    }
   });
   $('stop').addEventListener('click', () => globalThis.uplinkStop && globalThis.uplinkStop());
 
@@ -324,5 +414,6 @@
     e.preventDefault();
   });
 
+  renderAddresses();
   renderTabs({});
 })();

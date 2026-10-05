@@ -12,12 +12,13 @@
     <form id="start-form" class="panel launcher" autocomplete="off">
       <span class="panel-title">uplink</span>
       <div class="launch-row">
-        <label class="sr-only" for="sites">URL to check</label>
-        <input id="sites" name="sites" type="text" required spellcheck="false" inputmode="url"
-               placeholder="https://example.com, docs.example.com">
+        <label class="sr-only" for="sites">Address to add</label>
+        <input id="sites" name="sites" type="text" spellcheck="false" inputmode="url"
+               placeholder="Add an address: https://example.com">
         <button id="start" type="submit" disabled>Loading…</button>
         <button id="stop" type="button" disabled>Stop</button>
       </div>
+      <ul id="addresses" class="addresses" aria-label="Addresses checked in each pass"></ul>
       <details class="options">
         <summary>Options</summary>
         <div class="option-grid">
@@ -25,6 +26,10 @@
           <label>Requests in flight <input name="maxInFlight" type="number" min="1" value="64"></label>
           <label>Timeout (s) <input name="timeout" type="number" min="1" value="20"></label>
           <label>Max pages <input name="maxPages" type="number" min="1" value="10000"></label>
+          <label title="Links followed from an address to a page on the checked sites that is still crawled; empty for no limit">
+            Max depth on the sites <input name="maxDepth" type="number" min="0" placeholder="no limit"></label>
+          <label title="Links followed off the checked sites to a page that is still crawled; 0 only checks other sites' links">
+            Max depth off the sites <input name="maxExternalDepth" type="number" min="0" value="0"></label>
           <label>Seconds between passes <input name="interval" type="number" min="0" value="30"></label>
           <label>Slow from (ms) <input name="slow" type="number" min="1" value="1000"></label>
           <label class="check"><input name="sitemaps" type="checkbox" checked> Crawl sitemaps from robots.txt</label>
@@ -51,7 +56,7 @@
       <span id="gauge-label" class="gauge-label"></span>
     </div>
 
-    <p id="cors-notice" class="notice" hidden></p>
+    <div id="cors-notice" class="notice" hidden></div>
 
     <section id="view-summary" class="view">
       <div class="summary-row">
@@ -93,8 +98,11 @@
           example GitHub Pages, or when this page is served from the same site. Otherwise the page
           counts as reachable, but its links cannot be read.</li>
         <li>Links to other sites usually answer without CORS headers. A link that answers counts as good
-          (<em>status hidden</em>), so a 404 on another site may go unnoticed. A link that cannot be
-          reached at all is broken.</li>
+          (<em>status hidden</em>), so a 404 on another site may go unnoticed. A link with no answer the
+          browser lets through is unverified: it may be unreachable, or its server may refuse cross-origin
+          requests.</li>
+        <li>The browser console logs every request (debug level) and each unreadable page, prefixed
+          <code>[uplink]</code>.</li>
         <li>From an <code>https://</code> page the browser blocks <code>http://</code> links, which are
           reported as unverified.</li>
         <li>The browser follows redirects and sends its own User-Agent.</li>
