@@ -8,7 +8,6 @@ import java.net.URI;
 import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
-import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
@@ -17,9 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -35,6 +32,16 @@ import javax.net.ssl.SSLException;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.parser.Parser;
+import org.uplink.crawl.CheckRules.Check;
+
+import static org.uplink.crawl.CheckRules.ERROR_RETRY_MILLIS;
+import static org.uplink.crawl.CheckRules.MAX_PAGE_BYTES;
+import static org.uplink.crawl.CheckRules.MAX_ROBOTS_BYTES;
+import static org.uplink.crawl.CheckRules.RETRY_STATUSES;
+import static org.uplink.crawl.CheckRules.charset;
+import static org.uplink.crawl.CheckRules.isHtml;
+import static org.uplink.crawl.CheckRules.isXml;
+import static org.uplink.crawl.CheckRules.retryDelayMillis;
 
 /**
  * Breadth-first link checker. Pages on the start URL's site, or on any other allowed
@@ -59,26 +66,6 @@ public final class Crawler {
             return new Options(8, 64, Duration.ofSeconds(20), 10_000, DEFAULT_USER_AGENT, true, true);
         }
     }
-
-    /** Largest HTML body parsed for links; anything beyond is ignored. */
-    private static final int MAX_PAGE_BYTES = 10 * 1024 * 1024;
-
-    /** Largest robots.txt read for {@code Sitemap:} lines. */
-    private static final int MAX_ROBOTS_BYTES = 512 * 1024;
-
-    /** Statuses meaning "the server refused the robot", not "the page is missing". */
-    private static final Set<Integer> BLOCKED_STATUSES = Set.of(401, 403, 429, 999);
-
-    /** Transient statuses worth one more attempt. */
-    private static final Set<Integer> RETRY_STATUSES = Set.of(429, 502, 503, 504);
-
-    private static final Map<Integer, String> REASONS = Map.ofEntries(
-            Map.entry(400, "Bad Request"), Map.entry(401, "Unauthorized"), Map.entry(403, "Forbidden"),
-            Map.entry(404, "Not Found"), Map.entry(405, "Method Not Allowed"), Map.entry(408, "Request Timeout"),
-            Map.entry(410, "Gone"), Map.entry(429, "Too Many Requests"), Map.entry(451, "Unavailable For Legal Reasons"),
-            Map.entry(500, "Internal Server Error"), Map.entry(501, "Not Implemented"), Map.entry(502, "Bad Gateway"),
-            Map.entry(503, "Service Unavailable"), Map.entry(504, "Gateway Timeout"),
-            Map.entry(999, "Request Denied"));
 
     private final URI root;
     /** Sites whose pages are crawled: the root's first, then any others allowed. */
@@ -227,14 +214,7 @@ public final class Crawler {
                     return sitemaps;
                 }
                 String text = new String(body.readNBytes(MAX_ROBOTS_BYTES), StandardCharsets.UTF_8);
-                for (String line : text.split("\\R")) {
-                    int colon = line.indexOf(':');
-                    if (colon > 0 && line.substring(0, colon).trim().equalsIgnoreCase("sitemap")) {
-                        Links.resolve(line.substring(colon + 1).trim())
-                                .filter(uri -> Links.inSites(sites, uri))
-                                .ifPresent(sitemaps::add);
-                    }
-                }
+                sitemaps.addAll(CheckRules.sitemapUrls(text, sites));
             }
         } catch (IOException ignored) {
             // No robots.txt to read: the crawl just starts from the start URL alone.
@@ -288,8 +268,8 @@ public final class Crawler {
                             : Links.isLocal(url) ? Check.LOCAL
                             : checkExternal(url);
                     Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
-                    return new Checked(new LinkResult(url, referrer, internal, check.status, check.outcome,
-                            check.detail, elapsed), check.links);
+                    return new Checked(new LinkResult(url, referrer, internal, check.status(), check.outcome(),
+                            check.detail(), elapsed), check.links());
                 } finally {
                     stats.inFlight.decrementAndGet();
                 }
@@ -315,27 +295,6 @@ public final class Crawler {
         return (internal ? Links.siteHost(url) : url.getHost()) + ":" + url.getPort();
     }
 
-    private record Check(int status, LinkResult.Outcome outcome, String detail, List<URI> links) {
-
-        /** A link to localhost outside the crawled sites: visitors cannot open it, and it is never requested. */
-        static final Check LOCAL = new Check(0, LinkResult.Outcome.BLOCKED, "links to localhost", List.of());
-
-        static Check of(int status) {
-            LinkResult.Outcome outcome = status < 400 ? LinkResult.Outcome.OK
-                    : BLOCKED_STATUSES.contains(status) ? LinkResult.Outcome.BLOCKED
-                    : LinkResult.Outcome.BROKEN;
-            return new Check(status, outcome, describe(status), List.of());
-        }
-
-        static Check failure(IOException e) {
-            return new Check(0, LinkResult.Outcome.BROKEN, describe(e), List.of());
-        }
-
-        Check withLinks(List<URI> links) {
-            return new Check(status, outcome, detail, links);
-        }
-    }
-
     /**
      * GETs an internal URL and, when it is an HTML page on this site, extracts its links;
      * when it is an XML sitemap, the URLs it lists.
@@ -345,14 +304,15 @@ public final class Crawler {
         try {
             response = sendWithRetry(request(url, "GET"), HttpResponse.BodyHandlers.ofInputStream());
         } catch (IOException e) {
-            return Check.failure(e);
+            return Check.failure(describe(e));
         }
         Check check = Check.of(response.statusCode());
         URI finalUri = response.uri();
         try (InputStream body = response.body()) {
-            boolean html = isHtml(response.headers());
-            boolean followable = check.outcome == LinkResult.Outcome.OK
-                    && (html || isXml(response.headers()))
+            String contentType = response.headers().firstValue("Content-Type").orElse("");
+            boolean html = isHtml(contentType);
+            boolean followable = check.outcome() == LinkResult.Outcome.OK
+                    && (html || isXml(contentType))
                     && Links.inSites(sites, finalUri)
                     && notYetSeenRedirectTarget(url, finalUri)
                     && stats.pages() < options.maxPages();
@@ -361,12 +321,12 @@ public final class Crawler {
             }
             byte[] bytes = body.readNBytes(MAX_PAGE_BYTES);
             if (!html) {
-                Document xml = Jsoup.parse(new ByteArrayInputStream(bytes), charset(response.headers()),
+                Document xml = Jsoup.parse(new ByteArrayInputStream(bytes), charset(contentType),
                         finalUri.toString(), Parser.xmlParser());
                 return check.withLinks(new ArrayList<>(Links.extractSitemap(xml)));
             }
             stats.pages.incrementAndGet();
-            Document doc = Jsoup.parse(new ByteArrayInputStream(bytes), charset(response.headers()), finalUri.toString());
+            Document doc = Jsoup.parse(new ByteArrayInputStream(bytes), charset(contentType), finalUri.toString());
             return check.withLinks(new ArrayList<>(Links.extract(doc)));
         } catch (IOException e) {
             // The status was already received; a failure while reading the body only
@@ -403,7 +363,7 @@ public final class Crawler {
             get.body().close();
             return Check.of(get.statusCode());
         } catch (IOException e) {
-            return Check.failure(e);
+            return Check.failure(describe(e));
         }
     }
 
@@ -436,14 +396,14 @@ public final class Crawler {
                     if (response.body() instanceof InputStream in) {
                         in.close();
                     }
-                    Thread.sleep(retryDelay(response));
+                    Thread.sleep(retryDelayMillis(response.headers().firstValue("Retry-After")));
                     continue;
                 }
                 return response;
             } catch (IOException e) {
                 lastError = e;
                 if (attempt == 1) {
-                    Thread.sleep(500);
+                    Thread.sleep(ERROR_RETRY_MILLIS);
                 }
             }
         }
@@ -458,56 +418,6 @@ public final class Crawler {
             hops++;
         }
         return hops;
-    }
-
-    private static long retryDelay(HttpResponse<?> response) {
-        return response.headers().firstValue("Retry-After")
-                .flatMap(v -> {
-                    try {
-                        return Optional.of(Long.parseLong(v.trim()));
-                    } catch (NumberFormatException e) {
-                        return Optional.empty();
-                    }
-                })
-                .map(seconds -> Math.min(seconds, 10) * 1000)
-                .orElse(2000L);
-    }
-
-    private static boolean isHtml(HttpHeaders headers) {
-        String type = headers.firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
-        return type.contains("text/html") || type.contains("application/xhtml");
-    }
-
-    private static boolean isXml(HttpHeaders headers) {
-        String type = headers.firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
-        return type.contains("/xml") || type.contains("+xml");
-    }
-
-    /** Charset from Content-Type, or {@code null} to let jsoup sniff it from the document. */
-    private static String charset(HttpHeaders headers) {
-        String type = headers.firstValue("Content-Type").orElse("");
-        for (String part : type.split(";")) {
-            String p = part.trim();
-            if (p.toLowerCase(Locale.ROOT).startsWith("charset=")) {
-                String cs = p.substring(8).replace("\"", "").trim();
-                return cs.isEmpty() ? null : cs;
-            }
-        }
-        return null;
-    }
-
-    static String describe(int status) {
-        String reason = REASONS.get(status);
-        if (reason != null) {
-            return reason;
-        }
-        if (status < 300) {
-            return "OK";
-        }
-        if (status < 400) {
-            return "Redirect";
-        }
-        return status < 500 ? "Client Error" : "Server Error";
     }
 
     static String describe(IOException e) {

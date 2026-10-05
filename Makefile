@@ -1,7 +1,7 @@
 # Thin wrapper: every target is handled by make.sh.
 .DEFAULT_GOAL := build
 
-TARGETS := build jvm test install clean help
+TARGETS := build jvm web web-serve all test install clean help
 
 .PHONY: $(TARGETS)
 $(TARGETS):

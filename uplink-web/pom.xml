@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <!--
+        uplink in the browser: the uplink library compiled to WebAssembly with GraalVM
+        Web Image, plus a static page. `package` writes the whole site to target/web/.
+        Needs Oracle GraalVM 25.3+ (for the Web Image tool and its JavaScript interop
+        module, org.graalvm.webimage.api) and binaryen; see build-wasm.sh.
+    -->
+    <groupId>org.uplink</groupId>
+    <artifactId>uplink-web</artifactId>
+    <version>${revision}</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <!-- make.sh sets it to X.Y.Z from scripts/version.sh: -Drevision=... -->
+        <revision>dev</revision>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <compiler-plugin.version>3.15.0</compiler-plugin.version>
+        <dependency-plugin.version>3.9.0</dependency-plugin.version>
+        <enforcer-plugin.version>3.6.2</enforcer-plugin.version>
+        <exec-plugin.version>3.6.3</exec-plugin.version>
+        <resources-plugin.version>3.4.0</resources-plugin.version>
+        <web.dir>${project.build.directory}/web</web.dir>
+    </properties>
+
+    <dependencies>
+        <!--
+            Only uplink's library code is reachable from org.uplink.web.Main (the crawl
+            and report packages, and jsoup); the CLI's frameworks are left out.
+        -->
+        <dependency>
+            <groupId>org.uplink</groupId>
+            <artifactId>uplink</artifactId>
+            <version>${revision}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.quarkus</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>dev.tamboui</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>${enforcer-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>require-web-image</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireFilesExist>
+                                    <files>
+                                        <file>${java.home}/lib/svm/tools/svm-wasm</file>
+                                    </files>
+                                    <message>uplink-web must be built with Oracle GraalVM 25.3 or later, which includes the Web Image tool (lib/svm/tools/svm-wasm). Point JAVA_HOME at it; GraalVM CE does not ship it.</message>
+                                </requireFilesExist>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${compiler-plugin.version}</version>
+                <configuration>
+                    <!--
+                        source/target rather than release: org.graalvm.webimage.api is a
+                        GraalVM JDK module, not part of the Java SE API that release
+                        compiles against.
+                    -->
+                    <source>25</source>
+                    <target>25</target>
+                    <compilerArgs>
+                        <arg>--add-modules</arg>
+                        <arg>org.graalvm.webimage.api</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>${dependency-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>classpath</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>build-classpath</goal>
+                        </goals>
+                        <configuration>
+                            <includeScope>runtime</includeScope>
+                            <outputProperty>web.classpath</outputProperty>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>${resources-plugin.version}</version>
+                <executions>
+                    <!-- index.html carries the version; app.js and style.css are copied as they are. -->
+                    <execution>
+                        <id>page</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${web.dir}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>src/main/webapp</directory>
+                                    <filtering>true</filtering>
+                                    <includes>
+                                        <include>index.html</include>
+                                    </includes>
+                                </resource>
+                                <resource>
+                                    <directory>src/main/webapp</directory>
+                                    <filtering>false</filtering>
+                                    <excludes>
+                                        <exclude>index.html</exclude>
+                                    </excludes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>${exec-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>web-image</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>${project.basedir}/build-wasm.sh</argument>
+                                <argument>${project.build.outputDirectory}${path.separator}${web.classpath}</argument>
+                                <argument>${web.dir}</argument>
+                            </arguments>
+                            <environmentVariables>
+                                <JAVA_HOME>${java.home}</JAVA_HOME>
+                            </environmentVariables>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

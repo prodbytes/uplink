@@ -187,15 +187,22 @@ use a self-hosted runner.
 
 Requires GraalVM 25 (`native-image`); Maven comes from the wrapper.
 
+The repository has two components, built by the aggregator [pom.xml](pom.xml):
+
+- [uplink/](uplink/): the crawler library and the CLI (Quarkus, TamboUI).
+- [uplink-web/](uplink-web/): the browser version, which uses `uplink` as a library
+  (see [uplink in the browser](#uplink-in-the-browser)).
+
 ```bash
 ./mvnw test                          # unit + end-to-end tests
-./mvnw package -Dnative              # -> target/uplink
+./mvnw package -Dnative              # -> uplink/target/uplink
 scripts/install.sh                   # build and copy to ~/.local/bin/uplink
 PREFIX=/opt/homebrew/bin scripts/install.sh
 ```
 
 The same steps are available as `make` targets, which call [make.sh](make.sh):
-`make` (native build), `make jvm`, `make test`, `make install`, `make clean`.
+`make` (native build), `make jvm`, `make web`, `make web-serve`, `make all`
+(native build and browser version), `make test`, `make install`, `make clean`.
 Run `./make.sh help` to list them.
 
 Builds are versioned `X.Y.Z`: `X` and `Y` from [version.X.txt](version.X.txt)
@@ -222,9 +229,53 @@ it. Bump `version.X.txt` or `version.Y.txt` for a new major or minor version.
 
 Native image notes: the TamboUI Panama backend uses the Foreign Function &
 Memory API, so the build enables `-H:+ForeignAPISupport`
-([application.properties](src/main/resources/application.properties)). The
+([application.properties](uplink/src/main/resources/application.properties)). The
 backend is created directly rather than through `ServiceLoader`, because
 Quarkus native images do not register service providers automatically.
+
+### uplink in the browser
+
+[uplink-web/](uplink-web/) runs link checks in a browser tab, with the same
+Summary, Broken and Latency views as the dashboard (keys `1`–`3`, `←`/`→`,
+`↑`/`↓`, `PgUp`/`PgDn`, `Home`, `End`). Enter a URL (more sites can follow
+after `,` or `;`, as on the command line) and press **Start**. It checks the
+sites again and again, `Seconds between passes` apart, until you press **Stop**,
+which shows the final report and lets you download it. `?url=` in the page's
+address fills in the URL.
+
+There is no server. The `uplink` library (crawler, link rules, monitor and
+report) is compiled to WebAssembly with
+[GraalVM Web Image](https://www.graalvm.org/latest/reference-manual/web-image/),
+and requests are sent with the browser's `fetch`. `AsyncCrawler` in the library
+is the crawler for this: it does the same crawl as `Crawler`, but on one event
+loop with callbacks instead of virtual threads.
+
+```bash
+GRAALVM_HOME=/path/to/oracle-graalvm-25.3 make web   # -> uplink-web/target/web/
+make web-serve                                        # http://127.0.0.1:8000/
+```
+
+`make web` needs Oracle GraalVM 25.3 or later, because GraalVM CE does not
+include Web Image (`lib/svm/tools/svm-wasm`). It also needs binaryen's
+`wasm-as`, which devbox installs. The output in `uplink-web/target/web/` is a
+static site of about 9 MB (`index.html`, `app.js`, `style.css`,
+`uplink-web.js` and its `.wasm`). Host it anywhere that serves files over
+HTTP; WebAssembly does not load from `file://`. It needs a browser with
+WebAssembly GC: Chrome or Edge 119+, Firefox 120+, Safari 18.2+.
+
+The browser's security rules apply, so results can differ from the CLI's:
+
+- A page is crawled for links only if its site allows cross-origin reads
+  (CORS headers, as GitHub Pages sends), or if uplink-web is served from that
+  site. Otherwise the page counts as reachable, but its links cannot be read,
+  and the page says so.
+- Links to other sites usually answer without CORS headers. The browser then
+  hides the status: a link that answers counts as good ("status hidden"), so a
+  404 on another site can go unnoticed. A link that cannot be reached at all
+  is broken.
+- On an `https://` page the browser blocks `http://` links (mixed content).
+  They are reported as unverified.
+- The browser follows redirects and sends its own User-Agent.
 
 ---
 

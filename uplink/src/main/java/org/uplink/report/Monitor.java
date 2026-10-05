@@ -73,8 +73,13 @@ public final class Monitor implements CrawlListener {
      * and slow lists, and the pass totals are recorded.
      */
     public void passFinished(int number, Crawler crawler) {
+        passFinished(number, crawler.results(), crawler.stats());
+    }
+
+    /** {@link #passFinished(int, Crawler)} for a pass run by any crawler, such as {@code AsyncCrawler}. */
+    public void passFinished(int number, List<LinkResult> results, CrawlStats s) {
         Set<URI> checked = new HashSet<>();
-        for (LinkResult r : crawler.results()) {
+        for (LinkResult r : results) {
             checked.add(r.url());
         }
         for (URI url : List.copyOf(bad.keySet())) {
@@ -85,7 +90,6 @@ public final class Monitor implements CrawlListener {
         slow.keySet().retainAll(checked);
         pages.keySet().retainAll(checked);
 
-        CrawlStats s = crawler.stats();
         lastPass = new PassSummary(number, s, slow.size(), newlyBad.get(), recovered.get(), LocalTime.now());
         event(Kind.PASS, String.format("Pass #%d finished in %s: %d pages, %d requests, %d good, %d broken, %d unverified, %d slow (%d new problems, %d recovered)",
                 number, Report.duration(s.elapsed()), s.pages(), s.requests(), s.ok(), s.broken(), s.blocked(), slow.size(),
