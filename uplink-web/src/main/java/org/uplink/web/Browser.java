@@ -22,9 +22,13 @@ final class Browser {
     private Browser() {
     }
 
-    /** A value received from JavaScript as a Java string. */
+    /**
+     * A value received from JavaScript as a Java string. The bindings below only ever
+     * pass strings. (No undefined check: Oracle GraalVM 25.0's compile-time API has no
+     * JSValue.isUndefined, though 25.3's does.)
+     */
     static String string(Object value) {
-        if (value == null || JSValue.isUndefined(value)) {
+        if (value == null) {
             return "";
         }
         return value instanceof JSValue js ? js.asString() : value.toString();
