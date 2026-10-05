@@ -3,16 +3,20 @@
 # As prodbytes/dsp's site stacks: deploy in us-east-1, the region of the
 # acm-cert stack of the same TenantId and of the zone stack, whose exports it
 # imports. Deployed by scripts/deploy.sh (uplink-web for production,
-# uplink-rc-web for the release candidate).
+# uplink-rc-web for the release candidate). Needs CAPABILITY_AUTO_EXPAND: the
+# AWS::LanguageExtensions transform subscribes each NotificationEmails address.
 
 AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::LanguageExtensions
 Description: >
   uplink in the browser: https://uplink.nu01.com (TenantId uplink) or
   https://rc.uplink.nu01.com (TenantId uplink-rc). One CloudFront
   distribution in front of a private S3 bucket (origin access control)
   holding the static site that `make web` builds (uplink-web/target/web/),
   with the certificate from the acm-cert stack of the same TenantId and
-  alias records in the uplink-zone stack's zone.
+  alias records in the uplink-zone stack's zone. /health is a Lambda function
+  (through its function URL) that checks what the site and the CLI depend on;
+  Route 53 health checks of / and /health alarm to NotificationEmails.
 
 Parameters:
   TenantId:
@@ -23,6 +27,20 @@ Parameters:
     Type: String
     Default: uplink-zone
     Description: The stack of infra/zone.cform.yaml, whose zone holds the site's name
+  NotificationEmails:
+    Type: CommaDelimitedList
+    Default: julio+health@nu01.com
+    Description: >
+      Addresses emailed when a health check fails or recovers. Each must
+      confirm the subscription email from AWS before it gets alarms.
+  RunScriptUrl:
+    Type: String
+    Default: https://sh.uplink.nu01.com/
+    Description: The curl | sh run script (infra/sh.cform.yaml), checked by /health
+  GitHubRepository:
+    Type: String
+    Default: prodbytes/uplink
+    Description: owner/name whose latest release the run script downloads, checked by /health
 
 Resources:
   SiteBucket:
@@ -108,6 +126,21 @@ Resources:
             OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
             S3OriginConfig:
               OriginAccessIdentity: ''
+          - Id: health
+            # https://<id>.lambda-url.<region>.on.aws/ -> its host
+            DomainName: !Select [2, !Split ['/', !GetAtt HealthFunctionUrl.FunctionUrl]]
+            OriginAccessControlId: !GetAtt HealthOriginAccessControl.Id
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        CacheBehaviors:
+          - PathPattern: /health
+            TargetOriginId: health
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: !Ref HealthCachePolicy
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
         DefaultCacheBehavior:
           TargetOriginId: site
           ViewerProtocolPolicy: redirect-to-https
@@ -148,6 +181,280 @@ Resources:
         HostedZoneId: Z2FDTNDATAQYW2
         EvaluateTargetHealth: false
 
+  # ---- /health ----------------------------------------------------------------
+  # A function behind the distribution checks what the site and the CLI need:
+  # the site's files in the bucket, the certificate, the live site through
+  # CloudFront, the run script and the latest GitHub release (which the run
+  # script downloads). 200 and "status": "ok" when all pass, else 503. Results
+  # are reused for 30 s, and CloudFront caches them as long whatever the query
+  # string, so health checkers and visitors cannot multiply the requests to
+  # GitHub or the function. Its role is in infra/github-deploy.cform.yaml, so
+  # the deploy roles never create IAM roles.
+  HealthLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${TenantId}-health
+      RetentionInDays: 30
+      Tags:
+        - Key: TenantId
+          Value: !Ref TenantId
+
+  HealthFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: HealthLogGroup
+    Properties:
+      FunctionName: !Sub ${TenantId}-health
+      Description: !Sub
+        - GET https://${DomainName}/health
+        - DomainName:
+            Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: index.handler
+      MemorySize: 256
+      Timeout: 15
+      Role:
+        Fn::ImportValue: !Sub ${TenantId}-HealthFunctionRoleArn
+      Environment:
+        Variables:
+          BUCKET: !Ref SiteBucket
+          CERT_ARN:
+            Fn::ImportValue: !Sub ${TenantId}-CertificateArn
+          DOMAIN:
+            Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+          SH_URL: !Ref RunScriptUrl
+          REPO: !Ref GitHubRepository
+      Code:
+        ZipFile: |
+          import json, os, time, urllib.request
+          from concurrent.futures import ThreadPoolExecutor
+          from datetime import datetime, timezone
+          import boto3
+
+          E = os.environ
+          s3, acm = boto3.client('s3'), boto3.client('acm')
+          FILES = ['index.html', 'app.js', 'style.css', 'uplink-web.js', 'uplink-web.js.wasm']
+          cache = {'until': 0}
+
+          def get(url, method='GET'):
+              req = urllib.request.Request(url, method=method, headers={'User-Agent': 'uplink-health'})
+              with urllib.request.urlopen(req, timeout=5) as r:
+                  return r.status, r.geturl(), r.read(65536) if method == 'GET' else b''
+
+          def files():
+              for key in FILES:
+                  h = s3.head_object(Bucket=E['BUCKET'], Key=key)
+                  if key.endswith('.wasm') and not h['ContentType'].startswith('application/wasm'):
+                      return False, key + ' is not served as application/wasm'
+              return True, f'{len(FILES)} files in place'
+
+          def certificate():
+              c = acm.describe_certificate(CertificateArn=E['CERT_ARN'])['Certificate']
+              days = (c['NotAfter'] - datetime.now(timezone.utc)).days
+              return c['Status'] == 'ISSUED' and days >= 14, f"{c['Status']}, expires in {days} days"
+
+          def site():
+              status, _, body = get(f"https://{E['DOMAIN']}/")
+              return b'name="uplink-version"' in body, f'HTTP {status}'
+
+          def run_script():
+              status, _, body = get(E['SH_URL'])
+              return body.startswith(b'#!'), f'HTTP {status}'
+
+          def release():
+              _, url, _ = get(f"https://github.com/{E['REPO']}/releases/latest", 'HEAD')
+              return '/releases/tag/' in url, url.rsplit('/', 1)[-1]
+
+          CHECKS = {'files': files, 'certificate': certificate, 'site': site,
+                    'run_script': run_script, 'github_release': release}
+
+          def run(check):
+              try:
+                  ok, detail = check()
+              except Exception as e:
+                  code = getattr(e, 'code', None) or getattr(e, 'response', {}).get('Error', {}).get('Code')
+                  ok, detail = False, type(e).__name__ + (f' {code}' if code else '')
+              return {'ok': bool(ok), 'detail': detail}
+
+          def handler(event, context):
+              now = time.time()
+              if cache['until'] < now:
+                  with ThreadPoolExecutor(len(CHECKS)) as pool:
+                      results = dict(zip(CHECKS, pool.map(run, CHECKS.values())))
+                  ok = all(r['ok'] for r in results.values())
+                  checked = datetime.now(timezone.utc).isoformat(timespec='seconds')
+                  body = json.dumps({'status': 'ok' if ok else 'fail', 'checkedAt': checked, 'checks': results}, indent=1)
+                  cache.update(until=now + 30, code=200 if ok else 503, body=body)
+                  if not ok:
+                      print(body)
+              return {'statusCode': cache['code'], 'body': cache['body'],
+                      'headers': {'Content-Type': 'application/json', 'Cache-Control': 'max-age=30'}}
+      Tags:
+        - Key: TenantId
+          Value: !Ref TenantId
+
+  # Only CloudFront may call the URL: it signs requests (origin access control).
+  HealthFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt HealthFunction.Arn
+      AuthType: AWS_IAM
+
+  HealthOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-health
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  HealthFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HealthFunction
+      Action: lambda:InvokeFunctionUrl
+      FunctionUrlAuthType: AWS_IAM
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  # Function URLs also need lambda:InvokeFunction for the caller.
+  HealthFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HealthFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  # Cached 30 s whatever the query string, headers or cookies.
+  HealthCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub ${AWS::StackName}-health
+        Comment: /health, briefly cached
+        MinTTL: 0
+        DefaultTTL: 30
+        MaxTTL: 30
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          CookiesConfig:
+            CookieBehavior: none
+
+  # ---- Route 53 health checks and their alarms ---------------------------------
+  # One of the domain itself (/) and one of /health, from three regions every
+  # 30 s; each alarms (and reports recovery) to the topic after two failing
+  # minutes. Route 53 publishes health check metrics only in us-east-1.
+  HealthTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${TenantId}-health
+      DisplayName: !Sub ${TenantId} health
+      Tags:
+        - Key: TenantId
+          Value: !Ref TenantId
+
+  Fn::ForEach::NotificationEmails:
+    - Email
+    - !Ref NotificationEmails
+    # &{Email} is the address without its non-alphanumeric characters.
+    - HealthEmail&{Email}:
+        Type: AWS::SNS::Subscription
+        Properties:
+          TopicArn: !Ref HealthTopic
+          Protocol: email
+          Endpoint: !Ref Email
+
+  SiteHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName:
+          Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+        Port: 443
+        ResourcePath: /
+        EnableSNI: true
+        RequestInterval: 30
+        FailureThreshold: 3
+        Regions: [us-east-1, us-west-2, eu-west-1]
+      HealthCheckTags:
+        - Key: Name
+          Value: !Sub ${TenantId} /
+        - Key: TenantId
+          Value: !Ref TenantId
+
+  HealthPathHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS_STR_MATCH
+        FullyQualifiedDomainName:
+          Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+        Port: 443
+        ResourcePath: /health
+        SearchString: '"status": "ok"'
+        EnableSNI: true
+        RequestInterval: 30
+        FailureThreshold: 3
+        Regions: [us-east-1, us-west-2, eu-west-1]
+      HealthCheckTags:
+        - Key: Name
+          Value: !Sub ${TenantId} /health
+        - Key: TenantId
+          Value: !Ref TenantId
+
+  SiteHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${TenantId}-health-site
+      AlarmDescription: !Sub
+        - https://${DomainName}/ is failing Route 53 health checks
+        - DomainName:
+            Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+      Namespace: AWS/Route53
+      MetricName: HealthCheckStatus
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref SiteHealthCheck
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref HealthTopic]
+      OKActions: [!Ref HealthTopic]
+
+  HealthPathHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${TenantId}-health-path
+      AlarmDescription: !Sub
+        - https://${DomainName}/health reports a failing service or dependency, or does not answer; open it for which
+        - DomainName:
+            Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+      Namespace: AWS/Route53
+      MetricName: HealthCheckStatus
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref HealthPathHealthCheck
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref HealthTopic]
+      OKActions: [!Ref HealthTopic]
+
 Outputs:
   SiteUrl:
     Description: The site
@@ -165,6 +472,15 @@ Outputs:
     Value: !Ref Distribution
     Export:
       Name: !Sub ${TenantId}-DistributionId
+  HealthUrl:
+    Description: What the site and the CLI depend on, as JSON
+    Value: !Sub
+      - https://${DomainName}/health
+      - DomainName:
+          Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
+  HealthTopicArn:
+    Description: Health alarms; NotificationEmails are subscribed
+    Value: !Ref HealthTopic
   DistributionDomainName:
     Description: CloudFront domain the alias records point at
     Value: !GetAtt Distribution.DomainName

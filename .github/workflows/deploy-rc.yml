@@ -110,4 +110,6 @@ jobs:
         env:
           STAGE: rc
           TAG: ${{ steps.tag.outputs.tag }}
+          # Who gets the health alarms; unset, scripts/deploy.sh's default.
+          HEALTH_EMAILS: ${{ vars.HEALTH_EMAILS }}
         run: bash scripts/deploy.sh
