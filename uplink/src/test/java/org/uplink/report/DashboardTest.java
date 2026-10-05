@@ -119,6 +119,7 @@ class DashboardTest {
         String version = VersionProvider.version();
         assertTrue(last.endsWith((version.equals("dev") ? "" : "v") + version + " "), last);
         assertTrue(last.startsWith(" 1-3 / ←→ switch tab"), last);
+        assertTrue(last.contains("github.com/prodbytes/uplink"), last);
     }
 
     @Test

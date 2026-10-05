@@ -50,6 +50,7 @@ class UplinkCommandTest {
             LaunchResult result = launcher.launch("--mode=console", site.externalUrl("/ext/ok"));
             assertEquals(0, result.exitCode(), result.getOutput());
             assertTrue(result.getOutput().contains("No bad links found."), result.getOutput());
+            assertTrue(result.getOutput().contains("uplink: https://github.com/prodbytes/uplink"), result.getOutput());
         }
     }
 
