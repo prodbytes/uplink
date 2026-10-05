@@ -361,7 +361,7 @@ Resources:
         - Key: TenantId
           Value: !Ref TenantId
 
-  Fn::ForEach::NotificationEmails:
+  Fn::ForEach::HealthEmails:
     - Email
     - !Ref NotificationEmails
     # &{Email} is the address without its non-alphanumeric characters.
