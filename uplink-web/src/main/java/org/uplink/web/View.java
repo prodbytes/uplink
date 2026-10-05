@@ -15,7 +15,7 @@ import org.uplink.report.Report;
 
 /**
  * The state behind the page, as JSON for app.js: the same panels as the TUI dashboard
- * (header, progress, broken, slow, events and latency), computed by uplink's
+ * (header, progress, broken, slow, events and latency) plus the uptime of each address, computed by uplink's
  * {@link Monitor} and {@link Report}.
  */
 final class View {
@@ -25,6 +25,8 @@ final class View {
     private static final int MAX_ROWS = 2000;
     /** Most recent events sent. */
     private static final int MAX_EVENTS = 300;
+    /** Most recent checks of each address drawn on the uptime timeline; uptime counts all the monitor keeps. */
+    private static final int MAX_TIMELINE = 120;
     /** Unreadable pages named in the notice; the console lists them all. */
     private static final int MAX_HIDDEN_EXAMPLES = 8;
 
@@ -202,6 +204,10 @@ final class View {
         }
         json.endArray();
 
+        json.array("uptime");
+        monitor.uptime().forEach((url, checks) -> uptime(json, url, checks));
+        json.endArray();
+
         json.array("sites");
         for (URI site : session.sites()) {
             json.object().put("url", site.toString()).end();
@@ -210,6 +216,57 @@ final class View {
 
         json.put("report", session.stopped() ? session.finalReport() : null);
         return json.end().toString();
+    }
+
+    /**
+     * One address on the uptime tab. A check is up, down (broken) or unverified (refused, or
+     * no answer the browser lets through); uptime is the share of up checks among the
+     * verified ones, or null when none was.
+     */
+    private static void uptime(Json json, URI url, List<Monitor.Check> checks) {
+        long up = 0;
+        long down = 0;
+        for (Monitor.Check c : checks) {
+            up += c.result().outcome() == LinkResult.Outcome.OK ? 1 : 0;
+            down += c.result().outcome() == LinkResult.Outcome.BROKEN ? 1 : 0;
+        }
+        LinkResult last = checks.getLast().result();
+        json.object()
+                .put("url", url.toString())
+                .put("checks", checks.size())
+                .put("up", up)
+                .put("down", down)
+                .put("unverified", checks.size() - up - down);
+        if (up + down > 0) {
+            json.put("ratio", (double) up / (up + down));
+        } else {
+            json.putNull("ratio");
+        }
+        json.put("state", checkState(last))
+                .put("status", statusLabel(last))
+                .put("millis", last.elapsed().toMillis())
+                .put("detail", last.detail());
+        json.array("timeline");
+        for (Monitor.Check c : checks.subList(Math.max(0, checks.size() - MAX_TIMELINE), checks.size())) {
+            LinkResult r = c.result();
+            json.object()
+                    .put("pass", c.pass())
+                    .put("time", c.time().format(TIME))
+                    .put("state", checkState(r))
+                    .put("status", statusLabel(r))
+                    .put("millis", r.elapsed().toMillis())
+                    .put("detail", r.detail())
+                    .end();
+        }
+        json.endArray().end();
+    }
+
+    private static String checkState(LinkResult r) {
+        return switch (r.outcome()) {
+            case OK -> "up";
+            case BROKEN -> "down";
+            case BLOCKED -> "unverified";
+        };
     }
 
     private static String state(Session session) {

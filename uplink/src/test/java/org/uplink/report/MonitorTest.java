@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.uplink.TestSite;
@@ -84,5 +85,23 @@ class MonitorTest {
 
         monitor.onResult(result(other, 0, Outcome.BROKEN, 20_000)); // a timeout is broken, not slow
         assertTrue(monitor.slowLinks().isEmpty());
+    }
+
+    @Test
+    void uptimeRecordsOnlyStartUrlsPerPass() {
+        Monitor monitor = new Monitor(Duration.ofSeconds(1));
+        URI other = URI.create("https://other.example/");
+        monitor.passStarted(1);
+        monitor.onResult(new LinkResult(PAGE, null, true, 200, Outcome.OK, "OK", Duration.ofMillis(30)));
+        monitor.onResult(result(LINK, 404, Outcome.BROKEN, 10)); // found on a page: not on the timeline
+        monitor.onResult(new LinkResult(other, null, true, 200, Outcome.OK, "OK", Duration.ofMillis(40)));
+        monitor.passStarted(2);
+        monitor.onResult(new LinkResult(PAGE, null, true, 0, Outcome.BROKEN, "timed out", Duration.ofSeconds(20)));
+
+        Map<URI, List<Monitor.Check>> uptime = monitor.uptime();
+        assertEquals(List.of(PAGE, other), List.copyOf(uptime.keySet()));
+        assertEquals(List.of(1, 2), uptime.get(PAGE).stream().map(Monitor.Check::pass).toList());
+        assertEquals(Outcome.BROKEN, uptime.get(PAGE).getLast().result().outcome());
+        assertEquals(1, uptime.get(other).size());
     }
 }

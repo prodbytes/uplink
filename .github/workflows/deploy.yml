@@ -80,4 +80,6 @@ jobs:
       - name: Deploy ${{ github.ref_name }}
         env:
           TAG: ${{ github.ref_name }}
+          # Who gets the health alarms; unset, scripts/deploy.sh's default.
+          HEALTH_EMAILS: ${{ vars.HEALTH_EMAILS }}
         run: bash scripts/deploy.sh

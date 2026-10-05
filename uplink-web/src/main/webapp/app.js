@@ -6,9 +6,12 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const TABS = ['summary', 'broken', 'latency'];
+  const TABS = ['summary', 'broken', 'latency', 'uptime', 'reports'];
+  /** Pass reports kept, newest first; each holds a blob URL until dropped. */
+  const MAX_REPORTS = 50;
   const PAGE_ROWS = 10;
-  const ui = { tab: 'summary', cursor: { broken: 0, latency: 0 }, state: null, ready: false };
+  const ui = { tab: 'summary', cursor: { broken: 0, latency: 0 }, state: null, ready: false,
+    uptimeRows: null, reports: [] };
 
   // ---- address list: every address started on, sorted and unique, kept in this browser ----
 
@@ -216,6 +219,66 @@
       </div>`).join('');
   }
 
+  function renderUptimeTab(s) {
+    const sites = s.uptime;
+    if (!sites.length) {
+      setTitle('uptime-tab', 'Uptime', 'dim');
+      setRows('uptime-tab', [], 'No checks yet', 'dim');
+      ui.uptimeRows = null;
+      return;
+    }
+    const down = sites.filter((u) => u.state === 'down').length;
+    const unverified = sites.filter((u) => u.state === 'unverified').length;
+    setTitle('uptime-tab', `Uptime of ${sites.length} address${sites.length === 1 ? '' : 'es'}: `
+      + `${sites.length - down - unverified} up, ${down} down, ${unverified} unverified`,
+      down ? 'bad' : unverified ? 'warn' : 'ok');
+    const rows = sites.map((u) => {
+      const tone = { up: 'ok', down: 'bad', unverified: 'warn' }[u.state];
+      const ratio = u.ratio === null ? '—' : (Math.floor(u.ratio * 1000) / 10).toFixed(1) + '%';
+      const ratioTone = u.ratio === null ? 'dim' : u.ratio === 1 ? 'ok' : u.ratio >= 0.99 ? 'warn' : 'bad';
+      return `<li class="uptime-row"><div class="cells">
+          ${span(u.state, tone + ' strong kind')} ${span(ratio, ratioTone + ' strong pct')}
+          ${span(u.status, tone + ' code')} ${span(u.millis + 'ms', 'ms')} ${link(u.url, 'url')}
+          ${span(`${u.checks} check${u.checks === 1 ? '' : 's'}`, 'dim tag')}</div>
+        <div class="timeline" role="img" aria-label="${esc(`${u.up} up, ${u.down} down, ${u.unverified} unverified`)}">
+          ${timeline(u.timeline, s.slowMillis)}</div></li>`;
+    }).join('');
+    // Redrawn only when a check came in, so a bar's tooltip stays open between checks.
+    if (ui.uptimeRows !== rows) {
+      $('uptime-tab').querySelector('.rows').innerHTML = rows;
+      ui.uptimeRows = rows;
+    }
+  }
+
+  /** The checks of one address as bars: colour by outcome, height by response time up to the slow threshold. */
+  function timeline(checks, slowMillis) {
+    return checks.map((c) => {
+      const tone = c.state === 'down' ? 'bad' : c.state === 'unverified' ? 'warn'
+        : c.millis >= slowMillis ? 'slow' : 'ok';
+      const height = c.state === 'up' ? Math.max(15, Math.min(100, c.millis / slowMillis * 100)) : 100;
+      const tip = `pass #${c.pass} at ${c.time}: ${c.state} ${c.status} in ${c.millis}ms${c.detail ? ' (' + c.detail + ')' : ''}`;
+      return `<span class="tick ${tone}-bg" style="height:${height.toFixed(0)}%" title="${esc(tip)}"></span>`;
+    }).join('');
+  }
+
+  /** The pass reports, drawn only when one arrives so an open preview stays open. */
+  function renderReportsTab() {
+    const reports = ui.reports;
+    setTitle('reports-tab', reports.length ? `Pass reports: ${reports.length}` : 'Pass reports',
+      reports.length ? 'accent' : 'dim');
+    setRows('reports-tab', reports.map((r) => {
+      const tone = r.broken ? 'bad' : r.unverified ? 'warn' : 'ok';
+      return `<li class="report-row"><div class="cells">
+          ${span(`#${r.pass}`, 'strong kind')} ${span(r.finishedAt, 'dim')}
+          ${span(`${r.broken} broken`, (r.broken ? 'bad' : 'ok') + ' strong')}
+          ${span(`${r.unverified} unverified`, r.unverified ? 'warn' : 'ok')}
+          ${span(`${r.good} good`, 'ok')} ${span(`${r.slow} slow`, r.slow ? 'slow' : 'dim')}
+          ${span(r.sites, 'dim url')}
+          <a class="download ${tone}" href="${esc(r.href)}" download="${esc(r.file)}">Download</a></div>
+        <details class="preview"><summary class="dim">Show report</summary><pre>${esc(r.text)}</pre></details></li>`;
+    }), 'No pass completed yet', 'dim');
+  }
+
   /** Highlights the cursor row of a list tab, clamped to the list, and keeps it in view. */
   function markCursor(tab, size, scroll = false) {
     const list = $(tab === 'broken' ? 'broken-tab' : 'latency-tab').querySelector('.rows');
@@ -248,7 +311,8 @@
   }
 
   function renderTabs(s) {
-    const counts = { summary: '', broken: s.root ? ` (${s.badTotal})` : '', latency: s.root ? ` (${s.pagesTotal})` : '' };
+    const counts = { summary: '', broken: s.root ? ` (${s.badTotal})` : '', latency: s.root ? ` (${s.pagesTotal})` : '',
+      uptime: '', reports: ui.reports.length ? ` (${ui.reports.length})` : '' };
     document.querySelectorAll('#tabs [role="tab"]').forEach((b, i) => {
       const t = b.dataset.tab;
       b.textContent = `${i + 1} ${t[0].toUpperCase()}${t.slice(1)}${counts[t]}`;
@@ -281,6 +345,7 @@
     if (ui.tab === 'summary') renderSummary(s);
     if (ui.tab === 'broken') renderBrokenTab(s);
     if (ui.tab === 'latency') renderLatencyTab(s);
+    if (ui.tab === 'uptime') renderUptimeTab(s);
     $('report-panel').hidden = !s.report;
     $('report').textContent = s.report || '';
   }
@@ -295,6 +360,22 @@
       return;
     }
     render();
+  };
+
+  globalThis.uplinkPassReport = (json) => {
+    let r;
+    try {
+      r = JSON.parse(json);
+    } catch (e) {
+      console.error('uplink: unreadable pass report', e);
+      return;
+    }
+    r.href = URL.createObjectURL(new Blob([r.text], { type: 'text/plain;charset=utf-8' }));
+    r.file = `uplink-pass-${r.pass}-${r.finishedAt.replace(/\D/g, '')}.txt`;
+    ui.reports.unshift(r);
+    ui.reports.splice(MAX_REPORTS).forEach((old) => URL.revokeObjectURL(old.href));
+    renderReportsTab();
+    if (ui.state) renderTabs(ui.state);
   };
 
   globalThis.uplinkReady = () => {
@@ -383,6 +464,7 @@
   function selectTab(tab) {
     ui.tab = tab;
     render();
+    if (tab === 'reports') renderReportsTab();
     if (!ui.state || !ui.state.root) renderTabs({});
   }
 
@@ -392,13 +474,13 @@
     const typing = e.target.closest('input, textarea, select');
     if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
     const i = TABS.indexOf(ui.tab);
-    if (e.key >= '1' && e.key <= '3') {
+    if (e.key >= '1' && e.key <= String(TABS.length)) {
       selectTab(TABS[Number(e.key) - 1]);
     } else if (e.key === 'ArrowRight') {
       selectTab(TABS[(i + 1) % TABS.length]);
     } else if (e.key === 'ArrowLeft') {
       selectTab(TABS[(i + TABS.length - 1) % TABS.length]);
-    } else if (ui.tab !== 'summary') {
+    } else if (ui.tab === 'broken' || ui.tab === 'latency') {
       const step = { ArrowUp: -1, ArrowDown: 1, PageUp: -PAGE_ROWS, PageDown: PAGE_ROWS }[e.key];
       const c = ui.cursor;
       if (step !== undefined) c[ui.tab] = Math.max(0, c[ui.tab] + step);
@@ -415,5 +497,6 @@
   });
 
   renderAddresses();
+  renderReportsTab();
   renderTabs({});
 })();

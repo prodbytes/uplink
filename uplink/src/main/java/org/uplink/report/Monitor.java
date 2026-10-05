@@ -3,9 +3,12 @@ package org.uplink.report;
 import java.net.URI;
 import java.time.Duration;
 import java.time.LocalTime;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,7 +44,13 @@ public final class Monitor implements CrawlListener {
     public record PassSummary(int number, CrawlStats stats, int slow, int newlyBad, int recovered, LocalTime finishedAt) {
     }
 
+    /** One check of a start URL, a point on the uptime timeline. */
+    public record Check(int pass, LocalTime time, LinkResult result) {
+    }
+
     private static final int MAX_EVENTS = 1000;
+    /** Most recent checks kept per start URL. */
+    private static final int MAX_CHECKS = 1000;
 
     private final Duration slowThreshold;
     private final Map<URI, LinkResult> bad = new ConcurrentHashMap<>();
@@ -51,8 +60,11 @@ public final class Monitor implements CrawlListener {
     private final AtomicInteger eventCount = new AtomicInteger();
     private final AtomicInteger newlyBad = new AtomicInteger();
     private final AtomicInteger recovered = new AtomicInteger();
+    /** Checks of each start URL, oldest first, in the order the start URLs were first checked. */
+    private final Map<URI, Deque<Check>> uptime = new LinkedHashMap<>();
     private volatile URI lastStarted;
     private volatile PassSummary lastPass;
+    private volatile int pass;
 
     public Monitor(Duration slowThreshold) {
         this.slowThreshold = slowThreshold;
@@ -63,6 +75,7 @@ public final class Monitor implements CrawlListener {
     }
 
     public void passStarted(int number) {
+        pass = number;
         newlyBad.set(0);
         recovered.set(0);
         event(Kind.PASS, "Pass #" + number + " started");
@@ -107,6 +120,9 @@ public final class Monitor implements CrawlListener {
 
     @Override
     public void onResult(LinkResult r) {
+        if (r.referrer() == null) {
+            recordCheck(r);
+        }
         if (r.internal()) {
             pages.put(r.url(), r);
         }
@@ -133,6 +149,16 @@ public final class Monitor implements CrawlListener {
             }
         } else {
             slow.remove(r.url());
+        }
+    }
+
+    private void recordCheck(LinkResult r) {
+        synchronized (uptime) {
+            Deque<Check> checks = uptime.computeIfAbsent(r.url(), url -> new ArrayDeque<>());
+            checks.addLast(new Check(pass, LocalTime.now(), r));
+            if (checks.size() > MAX_CHECKS) {
+                checks.removeFirst();
+            }
         }
     }
 
@@ -195,6 +221,18 @@ public final class Monitor implements CrawlListener {
     /** Events, oldest first. */
     public List<Event> events() {
         return List.copyOf(events);
+    }
+
+    /**
+     * The uptime timeline: the most recent checks of each start URL (the root of each
+     * site, not the links found on it), oldest first.
+     */
+    public Map<URI, List<Check>> uptime() {
+        synchronized (uptime) {
+            Map<URI, List<Check>> copy = new LinkedHashMap<>();
+            uptime.forEach((url, checks) -> copy.put(url, List.copyOf(checks)));
+            return copy;
+        }
     }
 
     public URI lastStarted() {
