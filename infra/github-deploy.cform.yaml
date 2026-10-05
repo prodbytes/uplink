@@ -1,10 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   uplink-github-deploy: lets GitHub Actions deploy uplink in the browser
-  (infra/site.yaml, by scripts/deploy.sh). A production role that only *GA
-  tag runs can assume, limited to the uplink-web stack and the
-  uplink.nu01.com records; and a release-candidate role for *RC* tag runs
-  and manual runs from main, limited to the uplink-rc-web stack and the
+  (infra/acm-cert.cform.yaml and infra/site.cform.yaml, by scripts/deploy.sh).
+  A production role that only *GA tag runs can assume, limited to the
+  uplink-acm-cert and uplink-web stacks and the uplink.nu01.com records; and a
+  release-candidate role for *RC* tag runs and manual runs from main, limited
+  to the uplink-rc-acm-cert and uplink-rc-web stacks and the
   rc.uplink.nu01.com records. Deployed once, by hand (see infra/README.md).
 
 Parameters:
@@ -24,7 +25,7 @@ Parameters:
   ZoneStackName:
     Type: String
     Default: uplink-zone
-    Description: The stack of infra/zone.yaml, whose zone holds the site records
+    Description: The stack of infra/zone.cform.yaml, whose zone holds the site records
   ProdDomainName:
     Type: String
     Default: uplink.nu01.com
@@ -78,7 +79,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: cloudformation:*
-                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-web/*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-acm-cert/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-web/*
               - Effect: Allow
                 Action:
                   - cloudformation:ValidateTemplate
@@ -162,7 +165,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: cloudformation:*
-                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-rc-web/*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-rc-acm-cert/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/uplink-rc-web/*
               - Effect: Allow
                 Action:
                   - cloudformation:ValidateTemplate

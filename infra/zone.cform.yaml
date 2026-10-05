@@ -2,7 +2,9 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   uplink-zone: the public Route 53 zone uplink.nu01.com, delegated from the
   parent zone nu01.com with an NS record there. A stack of its own, so the
-  zone (and its name servers) outlive the uplink-sh stack that uses it.
+  zone (and its name servers) outlive the stacks that use it: uplink-sh,
+  and the acm-cert and site stacks of uplink in the browser, which import
+  its exports as prodbytes/dsp's stacks import its route53-zone's.
 
 Parameters:
   ZoneName:
@@ -31,8 +33,14 @@ Resources:
 
 Outputs:
   HostedZoneId:
+    Description: Route 53 hosted zone ID
     Value: !Ref HostedZone
     Export:
       Name: !Sub ${AWS::StackName}-HostedZoneId
+  HostedZoneName:
+    Description: Domain the zone serves
+    Value: !Ref ZoneName
+    Export:
+      Name: !Sub ${AWS::StackName}-HostedZoneName
   NameServers:
     Value: !Join [',', !GetAtt HostedZone.NameServers]

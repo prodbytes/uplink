@@ -5,7 +5,7 @@
 # (uplink-rc-web), and ends by checking that the RC site serves this version.
 #
 # AWS access is keyless: GitHub's OIDC token is exchanged for the
-# uplink-github-deploy-rc role (infra/github-deploy.yaml). That role trusts
+# uplink-github-deploy-rc role (infra/github-deploy.cform.yaml). That role trusts
 # only *RC* tag runs and manual runs from main, and may only manage the
 # uplink-rc-web stack and the rc.uplink.nu01.com records. Its ARN is the
 # repository variable AWS_DEPLOY_RC_ROLE_ARN.

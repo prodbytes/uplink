@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Deploys https://sh.uplink.nu01.com, which serves scripts/run.sh:
-#   1. deploys the uplink-zone stack (infra/zone.yaml: the uplink.nu01.com
+#   1. deploys the uplink-zone stack (infra/zone.cform.yaml: the uplink.nu01.com
 #      zone, delegated from nu01.com)
-#   2. deploys the uplink-sh stack (infra/sh.yaml: certificate, bucket,
+#   2. deploys the uplink-sh stack (infra/sh.cform.yaml: certificate, bucket,
 #      CloudFront, DNS)
 #   3. uploads scripts/run.sh and invalidates the CloudFront cache
 #   4. smoke-tests the live URL: / and /run.sh must return the uploaded
@@ -43,7 +43,7 @@ stack_output() { # stack_output <stack> <output key>
 # 1. The zone
 echo "==> deploying $ZONE_STACK ($ZONE, delegated from $PARENT_HOSTED_ZONE_ID)"
 aws cloudformation deploy --stack-name "$ZONE_STACK" \
-  --template-file infra/zone.yaml \
+  --template-file infra/zone.cform.yaml \
   --parameter-overrides "ZoneName=$ZONE" "ParentHostedZoneId=$PARENT_HOSTED_ZONE_ID" \
   --no-fail-on-empty-changeset
 echo "    name servers: $(stack_output "$ZONE_STACK" NameServers)"
@@ -51,7 +51,7 @@ echo "    name servers: $(stack_output "$ZONE_STACK" NameServers)"
 # 2. The site. The certificate's DNS validation needs the delegation above.
 echo "==> deploying $STACK (https://$DOMAIN/)"
 aws cloudformation deploy --stack-name "$STACK" \
-  --template-file infra/sh.yaml \
+  --template-file infra/sh.cform.yaml \
   --parameter-overrides "DomainName=$DOMAIN" "ZoneStackName=$ZONE_STACK" \
   --no-fail-on-empty-changeset
 bucket="$(stack_output "$STACK" ScriptBucketName)"

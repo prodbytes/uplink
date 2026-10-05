@@ -14,7 +14,7 @@ Parameters:
   ZoneStackName:
     Type: String
     Default: uplink-zone
-    Description: The stack of infra/zone.yaml, whose zone holds DomainName
+    Description: The stack of infra/zone.cform.yaml, whose zone holds DomainName
 
 Resources:
   Certificate:

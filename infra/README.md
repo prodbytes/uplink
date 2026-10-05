@@ -5,16 +5,23 @@ certificates must live there) and in the `uplink.nu01.com` zone.
 
 | Template | Stack | What | Deployed by |
 |----------|-------|------|-------------|
-| [zone.yaml](zone.yaml) | `uplink-zone` | The `uplink.nu01.com` zone, delegated from `nu01.com` | [scripts/deploy-sh.sh](../scripts/deploy-sh.sh), by hand |
-| [sh.yaml](sh.yaml) | `uplink-sh` | https://sh.uplink.nu01.com, the `curl \| sh` run script | [scripts/deploy-sh.sh](../scripts/deploy-sh.sh), by hand |
-| [site.yaml](site.yaml) | `uplink-web` | https://uplink.nu01.com, uplink in the browser (GA) | [scripts/deploy.sh](../scripts/deploy.sh), from [deploy.yml](../.github/workflows/deploy.yml) on `*GA` tags |
-| [site.yaml](site.yaml) | `uplink-rc-web` | https://rc.uplink.nu01.com, the release candidate | [scripts/deploy.sh](../scripts/deploy.sh) with `STAGE=rc`, from [deploy-rc.yml](../.github/workflows/deploy-rc.yml) on `*RC*` tags |
-| [github-deploy.yaml](github-deploy.yaml) | `uplink-github-deploy` | The IAM roles those two workflows assume through GitHub's OIDC | by hand, once |
+| [zone.cform.yaml](zone.cform.yaml) | `uplink-zone` | The `uplink.nu01.com` zone, delegated from `nu01.com`; exports `uplink-zone-HostedZoneId` and `-HostedZoneName` | [scripts/deploy-sh.sh](../scripts/deploy-sh.sh), by hand |
+| [sh.cform.yaml](sh.cform.yaml) | `uplink-sh` | https://sh.uplink.nu01.com, the `curl \| sh` run script | [scripts/deploy-sh.sh](../scripts/deploy-sh.sh), by hand |
+| [acm-cert.cform.yaml](acm-cert.cform.yaml) | `uplink-acm-cert`, `uplink-rc-acm-cert` | The certificate of uplink.nu01.com / rc.uplink.nu01.com; exports `<tenant>-CertificateArn` and `-CertificateDomainName` | [scripts/deploy.sh](../scripts/deploy.sh) |
+| [site.cform.yaml](site.cform.yaml) | `uplink-web`, `uplink-rc-web` | https://uplink.nu01.com (GA) and https://rc.uplink.nu01.com (RC): S3 bucket, CloudFront with origin access control, alias records; imports the certificate and the zone | [scripts/deploy.sh](../scripts/deploy.sh), from [deploy.yml](../.github/workflows/deploy.yml) on `*GA` tags and [deploy-rc.yml](../.github/workflows/deploy-rc.yml) (`STAGE=rc`) on `*RC*` tags |
+| [github-deploy.cform.yaml](github-deploy.cform.yaml) | `uplink-github-deploy` | The IAM roles those two workflows assume through GitHub's OIDC | by hand, once |
+
+The layout follows prodbytes/dsp's gitops: one stack per piece (zone,
+certificate, site), each importing the previous one's exports, all in
+us-east-1 (CloudFront certificates must live there, and imports only
+resolve within a region). The tenant (`uplink` for production, `uplink-rc`
+for the release candidate) prefixes the stack names and exports and tags
+the resources.
 
 ## Letting GitHub Actions deploy
 
 The deploy workflows hold no AWS keys: they exchange GitHub's OIDC token
-for a role from [github-deploy.yaml](github-deploy.yaml). Production's
+for a role from [github-deploy.cform.yaml](github-deploy.cform.yaml). Production's
 role trusts only `*GA` tag runs; the RC role trusts `*RC*` tag runs and
 manual runs from `main`. Each may manage only its own stack and change
 only its own DNS name (and that name's certificate-validation record).
@@ -26,7 +33,7 @@ repository variables:
 
 ```bash
 aws cloudformation deploy --region us-east-1 --stack-name uplink-github-deploy \
-  --template-file infra/github-deploy.yaml --capabilities CAPABILITY_NAMED_IAM
+  --template-file infra/github-deploy.cform.yaml --capabilities CAPABILITY_NAMED_IAM
 out() { aws cloudformation describe-stacks --region us-east-1 --stack-name uplink-github-deploy \
   --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
 gh variable set AWS_DEPLOY_ROLE_ARN -R prodbytes/uplink --body "$(out DeployRoleArn)"
