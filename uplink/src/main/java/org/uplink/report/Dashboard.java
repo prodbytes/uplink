@@ -270,12 +270,14 @@ public final class Dashboard {
                 footer());
     }
 
-    /** Key help and pass state on the left, the version dimmed in the bottom-right corner. */
+    /** Key help and pass state on the left, the repository and version dimmed in the bottom-right corner. */
     private Element footer() {
         String version = VersionProvider.version();
         version = (version.equals("dev") ? version : "v" + version) + " ";
+        String repository = Report.REPOSITORY.replaceFirst("^https://", "") + "   ";
         return row(
                 text(" 1-3 / ←→ switch tab   ↑↓ PgUp PgDn scroll   Ctrl+C stop   |   " + state()).dim().fill(),
+                text(repository).fg(Color.DARK_GRAY).length(repository.length()),
                 text(version).fg(Color.DARK_GRAY).length(version.length()))
                 .length(1);
     }

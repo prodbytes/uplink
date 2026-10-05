@@ -11,6 +11,9 @@ import org.uplink.crawl.LinkResult;
 /** Plain-text formatting shared by the console and TUI front ends. */
 public final class Report {
 
+    /** Where uplink's source lives, shown in the dashboard footer and at the end of every report. */
+    public static final String REPOSITORY = "https://github.com/prodbytes/uplink";
+
     private Report() {
     }
 
@@ -47,6 +50,7 @@ public final class Report {
         if (bad.isEmpty()) {
             sb.append('\n').append("No bad links found.").append('\n');
         }
+        sb.append('\n').append("uplink: ").append(REPOSITORY).append('\n');
         return sb.toString();
     }
 
