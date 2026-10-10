@@ -289,21 +289,35 @@
     if (scroll) row.scrollIntoView({ block: 'nearest' });
   }
 
+  /** A notice: a title, a sentence on why, an optional fix and an optional list, each on its own line. */
+  const noticeHtml = ({ title, why, fix = '', items = '' }) =>
+    `<p class="notice-title"><span aria-hidden="true">⚠</span> ${title}</p>`
+    + `<p class="notice-why">${why}</p>`
+    + (fix ? `<p class="notice-fix"><span class="notice-label">Fix</span> ${fix}</p>` : '')
+    + (items ? `<ul class="notice-list">${items}</ul>` : '');
+
   function renderNotice(s) {
     const notice = $('cors-notice');
+    const header = '<code>Access-Control-Allow-Origin</code>';
     if (s.hiddenPages) {
       const one = s.hiddenPages === 1;
-      const shown = s.hiddenExamples.map((p) => `<li>${link(p.url)}</li>`).join('');
       const rest = s.hiddenPages - s.hiddenExamples.length;
-      notice.innerHTML = `${s.hiddenPages} page${one ? '' : 's'} on the crawled site answered without CORS headers `
-        + `(no <code>Access-Control-Allow-Origin</code>), so the browser would not let uplink read `
-        + `${one ? 'it' : 'them'}: ${one ? 'its' : 'their'} links were not crawled. `
-        + 'To crawl them from a browser, the site must send that header on them; the uplink CLI has no such limit.'
-        + `<ul>${shown}${rest > 0 ? `<li class="dim">… ${rest} more, listed in the browser console</li>` : ''}</ul>`;
+      notice.innerHTML = noticeHtml({
+        title: `${s.hiddenPages} page${one ? '' : 's'} could not be crawled from the browser`,
+        why: `${one ? 'It' : 'They'} answered without CORS headers (no ${header}), so the browser won't let uplink `
+          + `read ${one ? 'it' : 'them'}, and ${one ? 'its' : 'their'} links weren't followed.`,
+        fix: `send ${header} on ${one ? 'that page' : 'those pages'}, or crawl with the uplink CLI, which has no such limit.`,
+        items: s.hiddenExamples.map((p) => `<li>${link(p.url)}</li>`).join('')
+          + (rest > 0 ? `<li class="dim">… and ${rest} more, listed in the browser console</li>` : ''),
+      });
       notice.hidden = false;
     } else if (s.hidden) {
-      notice.textContent = `${s.hidden} link${s.hidden === 1 ? '' : 's'} to other sites answered, but without CORS `
-        + 'headers, so their status is hidden from the browser; they count as good.';
+      const one = s.hidden === 1;
+      notice.innerHTML = noticeHtml({
+        title: `${s.hidden} link${one ? '' : 's'} to other sites can't be checked from the browser`,
+        why: `${one ? 'It' : 'They'} answered without CORS headers, so the browser hides ${one ? 'its' : 'their'} `
+          + `status; ${one ? 'it counts' : 'they count'} as good.`,
+      });
       notice.hidden = false;
     } else {
       notice.hidden = true;
