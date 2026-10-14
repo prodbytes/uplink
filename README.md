@@ -47,13 +47,14 @@ Finished in 3.1s - 456 unique links checked
   Unverified links:  1  (server refused automated access)
 ```
 
-The site is two CloudFormation stacks in us-east-1, both deployed by
-[scripts/deploy-sh.sh](scripts/deploy-sh.sh):
-[infra/zone.cform.yaml](infra/zone.cform.yaml) (the `uplink.nu01.com` hosted zone,
-delegated from `nu01.com`) and [infra/sh.cform.yaml](infra/sh.cform.yaml) (ACM
-certificate, private S3 bucket, CloudFront with HTTPS only, and Route 53
-aliases). The deploy script then uploads the script, invalidates the cache
-and smoke-tests the live URL.
+The site is a CloudFormation stack in us-east-1,
+[infra/sh.cform.yaml](infra/sh.cform.yaml) (ACM certificate, private S3
+bucket, CloudFront with HTTPS only), deployed by
+[scripts/deploy-sh.sh](scripts/deploy-sh.sh), which then uploads the
+script, invalidates the cache and smoke-tests the live URL. Its DNS records,
+like all of uplink's, are in the `nu01.com` zone, managed from the nu01 repo
+(stacks `nu01-route53-zone` and `nu01-dns`; see
+[infra/README.md](infra/README.md#dns)).
 
 uplink crawls every page on the target site, recursively following links on the
 same host (`www.` is ignored, so `example.com` and `www.example.com` count as one
