@@ -1,4 +1,4 @@
-# aws cloudformation deploy --region us-east-1 --stack-name uplink-acm-cert --template-file infra/acm-cert.cform.yaml --parameter-overrides TenantId=uplink DomainName=uplink.nu01.com
+# aws cloudformation deploy --region us-east-1 --stack-name uplink-acm-cert --template-file infra/acm-cert.cform.yaml --parameter-overrides TenantId=uplink DomainName=uplink.nu01.com --tags project=uplink tenancy=GA
 # aws cloudformation delete-stack --region us-east-1 --stack-name uplink-acm-cert
 #
 # As prodbytes/dsp's acm-cert: MUST be deployed in us-east-1, where CloudFront

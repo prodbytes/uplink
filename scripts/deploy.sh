@@ -9,18 +9,16 @@
 #        <tenant>-acm-cert  infra/acm-cert.cform.yaml: the certificate, in the
 #                           uplink-zone stack's zone (infra/zone.cform.yaml)
 #        <tenant>-web       infra/site.cform.yaml: the bucket, CloudFront with
-#                           origin access control, the alias records, /health
-#                           and the Route 53 health checks of / and /health,
-#                           which alarm to the --emails addresses
+#                           origin access control, the alias records and
+#                           /health (checked every 5 minutes by the central
+#                           nu01-monitor stack in the nu01 repo, which emails
+#                           julio+health@nu01.com)
 #   3. uploads the site and invalidates the CloudFront cache
 #   4. smoke-tests the live site: / must carry this version, the
 #      WebAssembly module and its loader must be served (the module as
 #      application/wasm, which browsers require), and /health must pass
 #
-# Usage: scripts/deploy.sh [--emails a@example.com,b@example.com]
-#   --emails     who gets the health alarms, comma-separated (default:
-#                $HEALTH_EMAILS, else julio+health@nu01.com). Each address
-#                must confirm the subscription email AWS sends it.
+# Usage: scripts/deploy.sh
 #
 # Run by .github/workflows/deploy.yml on *GA tags and deploy-rc.yml on *RC*
 # tags, or by hand with credentials that can manage the stack. Settings,
@@ -31,26 +29,15 @@
 #   STAGE        prod (default) or rc
 #   AWS_REGION   default us-east-1 (CloudFront certificates live there)
 #   SKIP_BUILD   1 to deploy an existing uplink-web/target/web/ of this version
-#   HEALTH_EMAILS  the default of --emails
 # The build needs Oracle GraalVM 25.3+ and binaryen (see make.sh); the rest,
 # the AWS CLI, curl and python3.
 set -euo pipefail
 
-HEALTH_EMAILS="${HEALTH_EMAILS:-julio+health@nu01.com}"
 while (($#)); do
   case "$1" in
-    --emails) [[ $# -ge 2 ]] || { echo "error: --emails needs a value" >&2; exit 2; }
-      HEALTH_EMAILS="$2"; shift 2 ;;
-    --emails=*) HEALTH_EMAILS="${1#--emails=}"; shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown argument '$1' (see --help)" >&2; exit 2 ;;
   esac
-done
-IFS=, read -r -a emails <<<"$HEALTH_EMAILS"
-((${#emails[@]})) || { echo "error: --emails is empty" >&2; exit 2; }
-for email in "${emails[@]}"; do
-  [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] \
-    || { echo "error: '$email' isn't an email address (--emails)" >&2; exit 2; }
 done
 
 cd "$(dirname "$0")/.."
@@ -58,8 +45,8 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
 STAGE="${STAGE:-prod}"
 case "$STAGE" in
-  prod) TENANT_ID=uplink DOMAIN=uplink.nu01.com ;;
-  rc) TENANT_ID=uplink-rc DOMAIN=rc.uplink.nu01.com ;;
+  prod) TENANT_ID=uplink TENANCY=GA DOMAIN=uplink.nu01.com ;;
+  rc) TENANT_ID=uplink-rc TENANCY=RC DOMAIN=rc.uplink.nu01.com ;;
   *) echo "error: STAGE must be prod or rc (got '$STAGE')" >&2; exit 2 ;;
 esac
 ZONE_STACK=uplink-zone
@@ -81,12 +68,14 @@ if [[ -n "${tag_xy:-}" && "$tag_xy" != "$VERSION_X.$VERSION_Y" ]]; then
 fi
 echo "==> deploying uplink-web $VERSION to https://$DOMAIN/ ($STAGE, $AWS_REGION)"
 
+# The project and tenancy tags (cost allocation) propagate to every resource.
 deploy() { # deploy <stack> <template> <parameter overrides...>
   local stack="$1" template="$2"
   shift 2
   echo "==> deploying $stack"
   aws cloudformation deploy --stack-name "$stack" --template-file "$template" \
-    --no-fail-on-empty-changeset --capabilities CAPABILITY_AUTO_EXPAND --parameter-overrides "$@"
+    --no-fail-on-empty-changeset \
+    --tags project=uplink "tenancy=$TENANCY" --parameter-overrides "$@"
 }
 
 stack_output() { # stack_output <stack> <output key>
@@ -118,8 +107,7 @@ deploy "$CERT_STACK" infra/acm-cert.cform.yaml \
   "TenantId=$TENANT_ID" "DomainName=$DOMAIN" "ZoneStackName=$ZONE_STACK"
 echo "    certificate: $(stack_output "$CERT_STACK" CertificateArn)"
 deploy "$SITE_STACK" infra/site.cform.yaml \
-  "TenantId=$TENANT_ID" "ZoneStackName=$ZONE_STACK" "NotificationEmails=$HEALTH_EMAILS"
-echo "    health alarms to $HEALTH_EMAILS (new addresses must confirm AWS's email)"
+  "TenantId=$TENANT_ID" "ZoneStackName=$ZONE_STACK"
 bucket="$(stack_output "$SITE_STACK" SiteBucketName)"
 distribution="$(stack_output "$SITE_STACK" DistributionId)"
 echo "    bucket: $bucket, distribution: $distribution"
