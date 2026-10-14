@@ -21,6 +21,12 @@ Resources:
       Name: !Ref ZoneName
       HostedZoneConfig:
         Comment: !Sub Public zone for ${ZoneName} (uplink)
+      # The zone doesn't get the stack's tags; it holds the GA and RC records.
+      HostedZoneTags:
+        - Key: project
+          Value: uplink
+        - Key: tenancy
+          Value: shared
 
   Delegation:
     Type: AWS::Route53::RecordSet

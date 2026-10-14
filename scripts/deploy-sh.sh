@@ -8,6 +8,9 @@
 #   4. smoke-tests the live URL: / and /run.sh must return the uploaded
 #      script byte for byte, and plain http must be refused
 #
+# The stacks are tagged project=uplink for cost allocation, tenancy=shared
+# for the zone (it holds the GA and RC records) and GA for uplink-sh.
+#
 # Run by hand with credentials that can manage those stacks. Settings, from
 # the environment:
 #   AWS_REGION             default us-east-1 (CloudFront certificates live there)
@@ -45,7 +48,7 @@ echo "==> deploying $ZONE_STACK ($ZONE, delegated from $PARENT_HOSTED_ZONE_ID)"
 aws cloudformation deploy --stack-name "$ZONE_STACK" \
   --template-file infra/zone.cform.yaml \
   --parameter-overrides "ZoneName=$ZONE" "ParentHostedZoneId=$PARENT_HOSTED_ZONE_ID" \
-  --no-fail-on-empty-changeset
+  --tags project=uplink tenancy=shared --no-fail-on-empty-changeset
 echo "    name servers: $(stack_output "$ZONE_STACK" NameServers)"
 
 # 2. The site. The certificate's DNS validation needs the delegation above.
@@ -53,7 +56,7 @@ echo "==> deploying $STACK (https://$DOMAIN/)"
 aws cloudformation deploy --stack-name "$STACK" \
   --template-file infra/sh.cform.yaml \
   --parameter-overrides "DomainName=$DOMAIN" "ZoneStackName=$ZONE_STACK" \
-  --no-fail-on-empty-changeset
+  --tags project=uplink tenancy=GA --no-fail-on-empty-changeset
 bucket="$(stack_output "$STACK" ScriptBucketName)"
 distribution="$(stack_output "$STACK" DistributionId)"
 echo "    bucket: $bucket, distribution: $distribution"

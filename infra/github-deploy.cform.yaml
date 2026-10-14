@@ -107,6 +107,7 @@ Resources:
                   - acm:DeleteCertificate
                   - acm:ListCertificates
                   - acm:AddTagsToCertificate
+                  - acm:RemoveTagsFromCertificate
                   - acm:ListTagsForCertificate
                 Resource: '*'
               - Effect: Allow
@@ -136,7 +137,7 @@ Resources:
                   - route53:ListHostedZones
                 Resource: '*'
               # /health (infra/site.cform.yaml): its function, which may only
-              # run as its own role, log group, alarm topic, health checks and alarms.
+              # run as its own role, and its log group.
               - Effect: Allow
                 Action: iam:PassRole
                 Resource: !GetAtt HealthFunctionRole.Arn
@@ -151,13 +152,20 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/uplink-health
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/uplink-health:*
+              # Legacy: the Route 53 health checks, their alarms and the
+              # uplink-health topic were replaced by the central nu01-monitor stack
+              # (nu01 repo). These sns, cloudwatch and route53 health check
+              # permissions (and the LanguageExtensions transform one below)
+              # only let CloudFormation delete them on the next deploy; they
+              # can be dropped after the next GA deploy.
               - Effect: Allow
                 Action: sns:*
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:uplink-health
               - Effect: Allow
                 Action: cloudwatch:*
                 Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:uplink-health-*
-              # Health checks have no names to scope by.
+              # Health checks have no names to scope by (legacy, see above;
+              # keep logs:DescribeLogGroups, the log group needs it).
               - Effect: Allow
                 Action:
                   - route53:CreateHealthCheck
@@ -169,7 +177,7 @@ Resources:
                   - logs:DescribeLogGroups
                   - cloudwatch:DescribeAlarms
                 Resource: '*'
-              # The site template's AWS::LanguageExtensions transform
+              # The site template's former AWS::LanguageExtensions transform (legacy, see above)
               - Effect: Allow
                 Action: cloudformation:CreateChangeSet
                 Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/LanguageExtensions
@@ -231,6 +239,7 @@ Resources:
                   - acm:DeleteCertificate
                   - acm:ListCertificates
                   - acm:AddTagsToCertificate
+                  - acm:RemoveTagsFromCertificate
                   - acm:ListTagsForCertificate
                 Resource: '*'
               - Effect: Allow
@@ -260,7 +269,7 @@ Resources:
                   - route53:ListHostedZones
                 Resource: '*'
               # /health (infra/site.cform.yaml): its function, which may only
-              # run as its own role, log group, alarm topic, health checks and alarms.
+              # run as its own role, and its log group.
               - Effect: Allow
                 Action: iam:PassRole
                 Resource: !GetAtt RcHealthFunctionRole.Arn
@@ -275,13 +284,20 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/uplink-rc-health
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/uplink-rc-health:*
+              # Legacy: the Route 53 health checks, their alarms and the
+              # uplink-rc-health topic were replaced by the central nu01-monitor stack
+              # (nu01 repo). These sns, cloudwatch and route53 health check
+              # permissions (and the LanguageExtensions transform one below)
+              # only let CloudFormation delete them on the next deploy; they
+              # can be dropped after the next RC deploy.
               - Effect: Allow
                 Action: sns:*
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:uplink-rc-health
               - Effect: Allow
                 Action: cloudwatch:*
                 Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:uplink-rc-health-*
-              # Health checks have no names to scope by.
+              # Health checks have no names to scope by (legacy, see above;
+              # keep logs:DescribeLogGroups, the log group needs it).
               - Effect: Allow
                 Action:
                   - route53:CreateHealthCheck
@@ -293,7 +309,7 @@ Resources:
                   - logs:DescribeLogGroups
                   - cloudwatch:DescribeAlarms
                 Resource: '*'
-              # The site template's AWS::LanguageExtensions transform
+              # The site template's former AWS::LanguageExtensions transform (legacy, see above)
               - Effect: Allow
                 Action: cloudformation:CreateChangeSet
                 Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/LanguageExtensions
