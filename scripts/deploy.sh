@@ -3,16 +3,19 @@
 # https://uplink.nu01.com, or with STAGE=rc to the release-candidate site,
 # https://rc.uplink.nu01.com (its own stack, uplink-rc-web):
 #   1. builds the site (./make.sh web -> uplink-web/target/web/) for this version
-#   2. deploys, as prodbytes/dsp's gitops does, one stack per piece, each
-#      importing the previous one's exports (all prefixed with the tenant,
-#      uplink or uplink-rc):
-#        <tenant>-acm-cert  infra/acm-cert.cform.yaml: the certificate, in the
-#                           uplink-zone stack's zone (infra/zone.cform.yaml)
+#   2. deploys, as prodbytes/dsp's gitops does, one stack per piece (all
+#      prefixed with the tenant, uplink or uplink-rc):
+#        <tenant>-acm-cert  infra/acm-cert.cform.yaml: the certificate,
+#                           validated in the apex zone nu01.com
 #        <tenant>-web       infra/site.cform.yaml: the bucket, CloudFront with
-#                           origin access control, the alias records and
-#                           /health (checked every 5 minutes by the central
-#                           nu01-monitor stack in the nu01 repo, which emails
-#                           julio+health@nu01.com)
+#                           origin access control (given the certificate's
+#                           ARN) and /health (checked every 5 minutes by the
+#                           central nu01-monitor stack in the nu01 repo, which
+#                           emails julio+health@nu01.com)
+#      The DNS records (aliases of uplink.nu01.com and rc.uplink.nu01.com in
+#      nu01.com) are in the nu01 repo's nu01-dns stack, not deployed here.
+#      When the certificate is replaced, the old one is deleted once the
+#      site stack has moved CloudFront to the new one.
 #   3. uploads the site and invalidates the CloudFront cache
 #   4. smoke-tests the live site: / must carry this version, the
 #      WebAssembly module and its loader must be served (the module as
@@ -49,7 +52,9 @@ case "$STAGE" in
   rc) TENANT_ID=uplink-rc TENANCY=RC DOMAIN=rc.uplink.nu01.com ;;
   *) echo "error: STAGE must be prod or rc (got '$STAGE')" >&2; exit 2 ;;
 esac
-ZONE_STACK=uplink-zone
+# The apex zone nu01.com (nu01 repo, stack nu01-route53-zone), where the
+# certificates validate.
+VALIDATION_ZONE_ID=Z04838091YTBIM6PNI1XK
 CERT_STACK=$TENANT_ID-acm-cert
 SITE_STACK=$TENANT_ID-web
 WEB=uplink-web/target/web
@@ -103,11 +108,32 @@ if [[ "$built" != "$VERSION" ]]; then
 fi
 
 # 2. The stacks. A new certificate's DNS validation takes a few minutes.
+# The site stack takes the certificate's ARN as a parameter: an import would
+# keep CloudFormation from replacing the certificate (a changed export value
+# that another stack imports is refused).
+old_cert="$(stack_output "$CERT_STACK" CertificateArn 2>/dev/null || true)"
+[[ "$old_cert" == arn:* ]] || old_cert=
+# Transition, once per stage (the first deploy after the subzone merge): the
+# deployed site stack still imports <tenant>-CertificateArn, which the cert
+# stack no longer exports. Release the import first, with the certificate it
+# already uses.
+if [[ -n "$old_cert" ]] && aws cloudformation list-imports --export-name "$TENANT_ID-CertificateArn" \
+  --query 'Imports[]' --output text 2>/dev/null | tr '\t' '\n' | grep -x "$SITE_STACK" >/dev/null; then
+  echo "    $SITE_STACK imports $TENANT_ID-CertificateArn: switching it to a parameter first"
+  deploy "$SITE_STACK" infra/site.cform.yaml "TenantId=$TENANT_ID" "CertificateArn=$old_cert"
+fi
 deploy "$CERT_STACK" infra/acm-cert.cform.yaml \
-  "TenantId=$TENANT_ID" "DomainName=$DOMAIN" "ZoneStackName=$ZONE_STACK"
-echo "    certificate: $(stack_output "$CERT_STACK" CertificateArn)"
-deploy "$SITE_STACK" infra/site.cform.yaml \
-  "TenantId=$TENANT_ID" "ZoneStackName=$ZONE_STACK"
+  "TenantId=$TENANT_ID" "DomainName=$DOMAIN" "ValidationZoneId=$VALIDATION_ZONE_ID"
+cert="$(stack_output "$CERT_STACK" CertificateArn)"
+echo "    certificate: $cert"
+deploy "$SITE_STACK" infra/site.cform.yaml "TenantId=$TENANT_ID" "CertificateArn=$cert"
+# A replaced certificate is retained by the cert stack (UpdateReplacePolicy),
+# since CloudFront used it until the deploy above; delete it now.
+if [[ -n "$old_cert" && "$old_cert" != "$cert" ]]; then
+  echo "    deleting the replaced certificate $old_cert"
+  aws acm delete-certificate --certificate-arn "$old_cert" \
+    || echo "    warning: couldn't delete $old_cert; delete it by hand once nothing uses it" >&2
+fi
 bucket="$(stack_output "$SITE_STACK" SiteBucketName)"
 distribution="$(stack_output "$SITE_STACK" DistributionId)"
 echo "    bucket: $bucket, distribution: $distribution"

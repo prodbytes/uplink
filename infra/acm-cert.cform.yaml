@@ -1,16 +1,17 @@
-# aws cloudformation deploy --region us-east-1 --stack-name uplink-acm-cert --template-file infra/acm-cert.cform.yaml --parameter-overrides TenantId=uplink DomainName=uplink.nu01.com --tags project=uplink tenancy=GA
+# aws cloudformation deploy --region us-east-1 --stack-name uplink-acm-cert --template-file infra/acm-cert.cform.yaml --parameter-overrides TenantId=uplink DomainName=uplink.nu01.com ValidationZoneId=Z04838091YTBIM6PNI1XK --tags project=uplink tenancy=GA
 # aws cloudformation delete-stack --region us-east-1 --stack-name uplink-acm-cert
 #
 # As prodbytes/dsp's acm-cert: MUST be deployed in us-east-1, where CloudFront
-# takes its certificates from and where the zone stack's exports live.
+# takes its certificates from.
 # Deployed by scripts/deploy.sh (uplink-acm-cert for production,
 # uplink-rc-acm-cert for the release candidate).
 
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  DNS-validated ACM certificate for one of uplink's sites, in the zone
-  exported by the uplink-zone stack (infra/zone.cform.yaml). The site stack
-  of the same TenantId (infra/site.cform.yaml) imports it.
+  DNS-validated ACM certificate for one of uplink's sites, validated in the
+  apex zone nu01.com (stack nu01-route53-zone, nu01 repo). The site stack of
+  the same TenantId (infra/site.cform.yaml) is passed its ARN by
+  scripts/deploy.sh and imports its domain name.
 
 Parameters:
   TenantId:
@@ -20,34 +21,54 @@ Parameters:
   DomainName:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
-    Description: Name the certificate covers, in the zone (uplink.nu01.com, rc.uplink.nu01.com)
-  ZoneStackName:
+    Description: Name the certificate covers (uplink.nu01.com, rc.uplink.nu01.com)
+  ValidationZoneId:
     Type: String
-    Default: uplink-zone
-    Description: The stack of infra/zone.cform.yaml, whose zone holds DomainName
+    AllowedPattern: "^Z[A-Z0-9]+$"
+    Description: >
+      The Route 53 zone CloudFormation writes the validation CNAME in: the
+      apex zone nu01.com (Z04838091YTBIM6PNI1XK), passed by scripts/deploy.sh
 
 Resources:
   # Naming the zone lets CloudFormation write the validation CNAME itself;
   # stack creation blocks until validation succeeds.
+  #
+  # Changing DomainValidationOptions replaces the certificate, as the release
+  # that moved validation from the uplink.nu01.com subzone (stack uplink-zone,
+  # retired after it) to the apex zone nu01.com does: CloudFormation requests
+  # a new certificate, validated it through the apex zone with the
+  # same deterministic _<token> CNAME that the nu01 repo's
+  # scripts/migrate-subzone.sh already copied there (CloudFormation UPSERTs
+  # it), and scripts/deploy.sh hands the new ARN to the site stack's
+  # CloudFront.
+  # UpdateReplacePolicy Retain keeps the old certificate on a replacement:
+  # CloudFront still uses it when this stack finishes, so deleting it here
+  # would fail (in use). scripts/deploy.sh deletes it once the site stack
+  # has switched to the new one.
   Certificate:
     Type: AWS::CertificateManager::Certificate
+    # Deleting the stack still deletes the certificate (no DeletionPolicy).
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks: [W3011]
+    UpdateReplacePolicy: Retain
     Properties:
       DomainName: !Ref DomainName
       ValidationMethod: DNS
       DomainValidationOptions:
         - DomainName: !Ref DomainName
-          HostedZoneId:
-            Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+          HostedZoneId: !Ref ValidationZoneId
       Tags:
         - Key: TenantId
           Value: !Ref TenantId
 
 Outputs:
   CertificateArn:
-    Description: ACM certificate ARN
+    # Not exported: CloudFormation can't change an exported value that
+    # another stack imports, which would block replacing the certificate.
+    Description: ACM certificate ARN (scripts/deploy.sh passes it to the site stack)
     Value: !Ref Certificate
-    Export:
-      Name: !Sub ${TenantId}-CertificateArn
   CertificateDomainName:
     Description: Name the certificate covers
     Value: !Ref DomainName

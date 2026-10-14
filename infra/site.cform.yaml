@@ -1,8 +1,9 @@
-# aws cloudformation deploy --region us-east-1 --stack-name uplink-web --template-file infra/site.cform.yaml --parameter-overrides TenantId=uplink --tags project=uplink tenancy=GA
+# aws cloudformation deploy --region us-east-1 --stack-name uplink-web --template-file infra/site.cform.yaml --parameter-overrides TenantId=uplink CertificateArn=<uplink-acm-cert's CertificateArn output> --tags project=uplink tenancy=GA
 #
 # As prodbytes/dsp's site stacks: deploy in us-east-1, the region of the
-# acm-cert stack of the same TenantId and of the zone stack, whose exports it
-# imports. Deployed by scripts/deploy.sh (uplink-web for production,
+# acm-cert stack of the same TenantId, whose domain name export it imports.
+# Its DNS records (A/AAAA aliases of uplink.nu01.com and rc.uplink.nu01.com
+# in the apex zone nu01.com) are in the nu01 repo's nu01-dns stack, not here. Deployed by scripts/deploy.sh (uplink-web for production,
 # uplink-rc-web for the release candidate). /health is checked every 5 minutes
 # by the central monitor (stack nu01-monitor in the nu01 repo), which emails
 # julio+health@nu01.com; this stack no longer has Route 53 health checks.
@@ -13,8 +14,8 @@ Description: >
   https://rc.uplink.nu01.com (TenantId uplink-rc). One CloudFront
   distribution in front of a private S3 bucket (origin access control)
   holding the static site that `make web` builds (uplink-web/target/web/),
-  with the certificate from the acm-cert stack of the same TenantId and
-  alias records in the uplink-zone stack's zone. /health is a Lambda function
+  with the certificate from the acm-cert stack of the same TenantId; its
+  alias records are in the nu01 repo (stack nu01-dns). /health is a Lambda function
   (through its function URL) that checks what the site and the CLI depend on,
   polled by the central nu01-monitor stack (nu01 repo).
 
@@ -23,10 +24,13 @@ Parameters:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9-]*$"
     Description: Prefix for import/export names and the TenantId tag (uplink, uplink-rc)
-  ZoneStackName:
+  CertificateArn:
     Type: String
-    Default: uplink-zone
-    Description: The stack of infra/zone.cform.yaml, whose zone holds the site's name
+    AllowedPattern: "^arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+$"
+    Description: >
+      The certificate of the acm-cert stack of the same TenantId (its
+      CertificateArn output), passed by scripts/deploy.sh. A parameter
+      rather than an import, so the certificate can be replaced.
   RunScriptUrl:
     Type: String
     Default: https://sh.uplink.nu01.com/
@@ -109,8 +113,7 @@ Resources:
         Aliases:
           - Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
         ViewerCertificate:
-          AcmCertificateArn:
-            Fn::ImportValue: !Sub ${TenantId}-CertificateArn
+          AcmCertificateArn: !Ref CertificateArn
           SslSupportMethod: sni-only
           MinimumProtocolVersion: TLSv1.2_2021
         DefaultRootObject: index.html
@@ -148,32 +151,9 @@ Resources:
         - Key: TenantId
           Value: !Ref TenantId
 
-  # Z2FDTNDATAQYW2 is the fixed hosted zone ID of every CloudFront distribution.
-  DnsRecordA:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId:
-        Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
-      Name:
-        Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt Distribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2
-        EvaluateTargetHealth: false
-
-  DnsRecordAAAA:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId:
-        Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
-      Name:
-        Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
-      Type: AAAA
-      AliasTarget:
-        DNSName: !GetAtt Distribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2
-        EvaluateTargetHealth: false
+  # The A/AAAA alias records of the site's name used to be here, in the
+  # uplink.nu01.com subzone; they are in the apex zone nu01.com now, owned by
+  # the nu01 repo's nu01-dns stack.
 
   # ---- /health ----------------------------------------------------------------
   # A function behind the distribution checks what the site and the CLI need:
@@ -213,8 +193,7 @@ Resources:
       Environment:
         Variables:
           BUCKET: !Ref SiteBucket
-          CERT_ARN:
-            Fn::ImportValue: !Sub ${TenantId}-CertificateArn
+          CERT_ARN: !Ref CertificateArn
           DOMAIN:
             Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
           SH_URL: !Ref RunScriptUrl
@@ -366,7 +345,7 @@ Outputs:
       - DomainName:
           Fn::ImportValue: !Sub ${TenantId}-CertificateDomainName
   DistributionDomainName:
-    Description: CloudFront domain the alias records point at
+    Description: CloudFront domain the alias records (nu01-dns stack) point at
     Value: !GetAtt Distribution.DomainName
     Export:
       Name: !Sub ${TenantId}-DistributionDomainName

@@ -3,20 +3,31 @@ Description: >
   uplink-sh: https://sh.uplink.nu01.com, which serves the run script
   (scripts/run.sh) at every path, so
   `curl -fsSL https://sh.uplink.nu01.com | sh -s -- <url or directory>`
-  runs uplink. One CloudFront distribution in front of a private S3 bucket,
-  its certificate and DNS records in the uplink-zone stack's zone. Deploy in
-  us-east-1 (CloudFront certificates must live there).
+  runs uplink. One CloudFront distribution in front of a private S3 bucket
+  and its certificate, validated in the apex zone nu01.com; the A/AAAA alias
+  records of sh.uplink.nu01.com are in the nu01 repo (stack nu01-dns).
+  Deploy in us-east-1 (CloudFront certificates must live there).
 
 Parameters:
   DomainName:
     Type: String
     Default: sh.uplink.nu01.com
-  ZoneStackName:
+  ValidationZoneId:
     Type: String
-    Default: uplink-zone
-    Description: The stack of infra/zone.cform.yaml, whose zone holds DomainName
+    AllowedPattern: "^Z[A-Z0-9]+$"
+    Description: >
+      The Route 53 zone CloudFormation writes the certificate's validation
+      CNAME in: the apex zone nu01.com (Z04838091YTBIM6PNI1XK), passed by
+      scripts/deploy-sh.sh
 
 Resources:
+  # Changing DomainValidationOptions replaces the certificate, as the deploy
+  # that moved validation from the uplink.nu01.com subzone (stack uplink-zone,
+  # retired after it) to the apex zone nu01.com does: CloudFormation requests
+  # a new certificate, validates it through the apex zone with the same
+  # deterministic _<token> CNAME that the nu01 repo's
+  # scripts/migrate-subzone.sh already copied there (CloudFormation UPSERTs
+  # it), swaps it into the distribution below, then deletes the old one.
   Certificate:
     Type: AWS::CertificateManager::Certificate
     Properties:
@@ -24,8 +35,7 @@ Resources:
       ValidationMethod: DNS
       DomainValidationOptions:
         - DomainName: !Ref DomainName
-          HostedZoneId:
-            Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+          HostedZoneId: !Ref ValidationZoneId
 
   ScriptBucket:
     Type: AWS::S3::Bucket
@@ -131,29 +141,10 @@ Resources:
             - EventType: viewer-request
               FunctionARN: !GetAtt ScriptPathFunction.FunctionMetadata.FunctionARN
 
-  DnsRecordA:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId:
-        Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
-      Name: !Ref DomainName
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt Distribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2 # CloudFront's alias zone
-        EvaluateTargetHealth: false
-
-  DnsRecordAAAA:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId:
-        Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
-      Name: !Ref DomainName
-      Type: AAAA
-      AliasTarget:
-        DNSName: !GetAtt Distribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2
-        EvaluateTargetHealth: false
+  # The A/AAAA alias records of sh.uplink.nu01.com used to be here, in the
+  # uplink.nu01.com subzone; they are in the apex zone nu01.com now, owned by
+  # the nu01 repo's nu01-dns stack (parameter UplinkShDistribution: the
+  # DistributionDomainName output below).
 
 Outputs:
   ScriptUrl:
@@ -163,3 +154,6 @@ Outputs:
     Value: !Ref ScriptBucket
   DistributionId:
     Value: !Ref Distribution
+  DistributionDomainName:
+    Description: CloudFront domain the alias records (nu01-dns stack) point at
+    Value: !GetAtt Distribution.DomainName

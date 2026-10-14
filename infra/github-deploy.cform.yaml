@@ -3,10 +3,12 @@ Description: >
   uplink-github-deploy: lets GitHub Actions deploy uplink in the browser
   (infra/acm-cert.cform.yaml and infra/site.cform.yaml, by scripts/deploy.sh).
   A production role that only *GA tag runs can assume, limited to the
-  uplink-acm-cert and uplink-web stacks and the uplink.nu01.com records; and a
-  release-candidate role for *RC* tag runs and manual runs from main, limited
-  to the uplink-rc-acm-cert and uplink-rc-web stacks and the
-  rc.uplink.nu01.com records. Also the execution roles of the sites' /health
+  uplink-acm-cert and uplink-web stacks and uplink.nu01.com's certificate
+  validation record in the apex zone nu01.com; and a release-candidate role
+  for *RC* tag runs and manual runs from main, limited to the
+  uplink-rc-acm-cert and uplink-rc-web stacks and rc.uplink.nu01.com's
+  validation record. The sites' alias records are in the nu01 repo
+  (stack nu01-dns). Also the execution roles of the sites' /health
   functions, so that the deploy roles only pass them and never create roles.
   Deployed by hand (see infra/README.md).
 
@@ -24,10 +26,19 @@ Parameters:
       OIDC subject claims (gh api repos/<owner>/<name>/actions/oidc/customization/sub
       shows use_immutable_subject and the sub_claim_prefix), so tokens say
       repo:<this>:ref:... rather than repo:owner/name:ref:...
-  ZoneStackName:
+  ApexZoneId:
     Type: String
-    Default: uplink-zone
-    Description: The stack of infra/zone.cform.yaml, whose zone holds the site records
+    Default: Z04838091YTBIM6PNI1XK
+    Description: >
+      The apex zone nu01.com (stack nu01-route53-zone, nu01 repo), where the
+      certificates validate and nu01-dns keeps the sites' alias records
+  LegacyZoneId:
+    Type: String
+    Default: Z04348662JLR2LAZSOI74
+    Description: >
+      The retired uplink.nu01.com subzone (stack uplink-zone), which the
+      first deploy after the merge into nu01.com deletes the site records
+      from. Drop it once that deploy ran on both stages.
   ProdDomainName:
     Type: String
     Default: uplink.nu01.com
@@ -90,6 +101,7 @@ Resources:
                   - cloudformation:GetTemplateSummary
                   - cloudformation:ListStacks
                   - cloudformation:ListExports
+                  - cloudformation:ListImports
                 Resource: '*'
               # The site bucket, named after the stack (uplink-web-sitebucket-...)
               - Effect: Allow
@@ -114,18 +126,25 @@ Resources:
                 Action:
                   - route53:ListResourceRecordSets
                   - route53:GetHostedZone
-                Resource: !Sub
-                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
-                  - ZoneId:
-                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
-              # Records may change only for the site and its ACM validation
-              # name (_<token>.uplink.nu01.com): never rc's or sh's.
+                Resource:
+                  - !Sub arn:${AWS::Partition}:route53:::hostedzone/${ApexZoneId}
+                  - !Sub arn:${AWS::Partition}:route53:::hostedzone/${LegacyZoneId}
+              # In nu01.com only the certificate's validation CNAME,
+              # _<32 hex>.uplink.nu01.com (normalized names: lowercase, no
+              # trailing dot). 32 ? rather than *, which also spans dots and
+              # would match rc's and sh's validation names.
               - Effect: Allow
                 Action: route53:ChangeResourceRecordSets
-                Resource: !Sub
-                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
-                  - ZoneId:
-                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+                Resource: !Sub arn:${AWS::Partition}:route53:::hostedzone/${ApexZoneId}
+                Condition:
+                  ForAllValues:StringLike:
+                    route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                      - !Sub _????????????????????????????????.${ProdDomainName}
+              # The old subzone, until round 2 has deployed on both stages:
+              # CloudFormation deletes the site's alias records from it.
+              - Effect: Allow
+                Action: route53:ChangeResourceRecordSets
+                Resource: !Sub arn:${AWS::Partition}:route53:::hostedzone/${LegacyZoneId}
                 Condition:
                   ForAllValues:StringLike:
                     route53:ChangeResourceRecordSetsNormalizedRecordNames:
@@ -135,6 +154,7 @@ Resources:
                 Action:
                   - route53:GetChange
                   - route53:ListHostedZones
+                  - route53:ListHostedZonesByName
                 Resource: '*'
               # /health (infra/site.cform.yaml): its function, which may only
               # run as its own role, and its log group.
@@ -222,6 +242,7 @@ Resources:
                   - cloudformation:GetTemplateSummary
                   - cloudformation:ListStacks
                   - cloudformation:ListExports
+                  - cloudformation:ListImports
                 Resource: '*'
               # The site bucket, named after the stack (uplink-rc-web-sitebucket-...)
               - Effect: Allow
@@ -246,18 +267,24 @@ Resources:
                 Action:
                   - route53:ListResourceRecordSets
                   - route53:GetHostedZone
-                Resource: !Sub
-                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
-                  - ZoneId:
-                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
-              # Records may change only for rc.uplink.nu01.com and its ACM
-              # validation name (_<token>.rc.uplink.nu01.com): never prod's.
+                Resource:
+                  - !Sub arn:${AWS::Partition}:route53:::hostedzone/${ApexZoneId}
+                  - !Sub arn:${AWS::Partition}:route53:::hostedzone/${LegacyZoneId}
+              # In nu01.com only the certificate's validation CNAME,
+              # _<32 hex>.rc.uplink.nu01.com (normalized: lowercase, no
+              # trailing dot): never prod's or anything else.
               - Effect: Allow
                 Action: route53:ChangeResourceRecordSets
-                Resource: !Sub
-                  - arn:${AWS::Partition}:route53:::hostedzone/${ZoneId}
-                  - ZoneId:
-                      Fn::ImportValue: !Sub ${ZoneStackName}-HostedZoneId
+                Resource: !Sub arn:${AWS::Partition}:route53:::hostedzone/${ApexZoneId}
+                Condition:
+                  ForAllValues:StringLike:
+                    route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                      - !Sub _????????????????????????????????.${RcDomainName}
+              # The old subzone, until round 2 has deployed on both stages:
+              # CloudFormation deletes the site's alias records from it.
+              - Effect: Allow
+                Action: route53:ChangeResourceRecordSets
+                Resource: !Sub arn:${AWS::Partition}:route53:::hostedzone/${LegacyZoneId}
                 Condition:
                   ForAllValues:StringLike:
                     route53:ChangeResourceRecordSetsNormalizedRecordNames:
@@ -267,6 +294,7 @@ Resources:
                 Action:
                   - route53:GetChange
                   - route53:ListHostedZones
+                  - route53:ListHostedZonesByName
                 Resource: '*'
               # /health (infra/site.cform.yaml): its function, which may only
               # run as its own role, and its log group.
